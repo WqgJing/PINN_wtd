@@ -130,9 +130,15 @@ def main():
     for k, v in s['info'].items():
         print(f"[syn] {k}: {v}", flush=True)
 
+    offset = float(wc.get('offset_m', 0.0))                 # the record lowered by a constant, shape unchanged
     sp = CubicBSpline1D(0.0, n_days, wc['knot_days'])
-    path = ZbSplineNumpy.fit(sp, t_h, s['zb_record'], wc['zb_min'])
+    path = ZbSplineNumpy.fit(sp, t_h, s['zb_record'] + offset, wc['zb_min'])
     zb = path.zb(t_h)
+    if offset:
+        print(f"[syn] water-table record lowered by {offset:.3f} m", flush=True)
+    depths_req = [float(d) for d in cfg['sensors']['depths_m']]
+    if cfg['sensors'].get('require_above_water_table', False) and max(depths_req) >= zb.min():
+        raise SystemExit(f"deepest sensor {max(depths_req):.2f} m is not above the water table (min {zb.min():.3f} m)")
     print(f"[syn] water table (spline, {sp.n_coef} coefficients) {zb.min():.3f} .. {zb.max():.3f} m; "
           f"rms minus the record {np.sqrt(np.mean((zb - s['zb_record']) ** 2)):.4f} m", flush=True)
 
@@ -159,14 +165,15 @@ def main():
     shutil.copy(args.config, os.path.join(out, 'config.yaml'))
     np.savez(os.path.join(out, 'synthetic.npz'),
              t_days=t_h, start=str(s['t0']), zb=zb, zb_coef=path.coef, zb_min=path.zb_min, knot_days=sp.dt,
-             zb_record=s['zb_record'], t_nodes=t_n, q_nodes=q_n, tp_nodes_mmd=tp_n, et_nodes=s['et'],
+             zb_record=s['zb_record'], zb_offset_m=offset, t_nodes=t_n, q_nodes=q_n, tp_nodes_mmd=tp_n, et_nodes=s['et'],
              p_nodes=s['p'], ft_nodes=ft, xi=A['xi'], theta=A['theta'][0], h=A['h'][0],
              sensor_depths_m=np.array(depths), theta_sensors=th, theta_sensors_check=th_c,
              sensor_below_water_table=below, converged=A['converged'][0],
              soil=np.array([soil[k] for k in ('theta_s', 'theta_r', 'alpha', 'n', 'Ks')]))
     rain_d, et_d, tp_d = daily(t_n, s['p'], n_days), daily(t_n, s['et'], n_days), daily(t_n, tp_n / 86400e3, n_days)
     summary = {'site': cfg['site']['name'], 'start': str(s['t0']), 'n_days': n_days, **s['info'],
-               'zb_range_m': [float(zb.min()), float(zb.max())], 'n_coef': sp.n_coef,
+               'zb_range_m': [float(zb.min()), float(zb.max())], 'zb_offset_m': offset, 'n_coef': sp.n_coef,
+               'deepest_sensor_min_gap_m': float(zb.min() - max(depths_req)),
                'rain_mm': float(rain_d.sum()), 'et_mm': float(et_d.sum()), 'tp_mm': float(tp_d.sum()),
                'ft_mean': float(ft.mean()), 'fem_converged_frac': float(A['converged'].mean()),
                'check_converged_frac': float(C['converged'].mean()),
