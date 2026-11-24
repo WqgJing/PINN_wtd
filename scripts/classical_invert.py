@@ -37,6 +37,8 @@ def centred_mean(y, m):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--run', required=True, help='PINN run whose config.yaml defines the data')
+    ap.add_argument('--set', action='append', default=[], help='overrides of that config, as in train_profile.py')
+    ap.add_argument('--pinn', default=None, help='PINN run drawn for comparison in result.png (default: --run)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--top', default='smooth', choices=['smooth', 'raw', 'true'])
     ap.add_argument('--smooth_hours', type=int, default=3)
@@ -53,14 +55,16 @@ def main():
     tic0 = time.time()
     os.makedirs(args.out, exist_ok=True)
 
-    cfg = tpf.load_config(os.path.join(args.run, 'config.yaml'), [])
+    cfg = tpf.load_config(os.path.join(args.run, 'config.yaml'), args.set)
+    with open(os.path.join(args.out, 'config.yaml'), 'w') as f:
+        yaml.safe_dump({'data_config': cfg, 'args': vars(args)}, f, sort_keys=False)
     B = tpf.build(cfg, torch.device('cpu'))
     rec = dict(np.load(cfg['data']['npz'], allow_pickle=False))
     with open(os.path.join(os.path.dirname(cfg['data']['npz']), 'config.yaml')) as f:
         syn = yaml.safe_load(f)
     fem_cfg = {'L': syn['fem']['L'], 'n_nodes': syn['fem']['n_nodes'], 'omega': syn['fem'].get('omega', 0.5),
                'tol': args.tol, 'max_iter': args.max_iter_picard}
-    s = rec['soil']
+    s = B['soil_params']                                       # the soil the method is given (soil_factor applied)
     soil = {'theta_s': float(s[0]), 'theta_r': float(s[1]), 'alpha': float(s[2]), 'n': float(s[3]), 'Ks': float(s[4])}
     t0 = float(cfg['window']['start_day'])
     tw, depths, th_obs, th_true = B['tw'], B['depths'], B['th_obs'], B['th_true']
@@ -107,7 +111,8 @@ def main():
     y_true = th_true[:, 1:].T.reshape(-1)
     rms = lambda v: float(np.sqrt(np.mean(np.square(v))))
     print(f"[cls] run {args.run}: sensors {depths} m (top {d_top} m is the boundary); window {t0}-"
-          f"{t0 + tw[-1]} d; {sp.n_coef} coefficients; solver dt {args.dt_hours} h, {n_s - 1} steps", flush=True)
+          f"{t0 + tw[-1]} d; {sp.n_coef} coefficients; solver dt {args.dt_hours} h, {n_s - 1} steps; soil given "
+          f"{ {k: round(v, 6) for k, v in soil.items()} }; mean top reading {th_obs[:, 0].mean():.4f}", flush=True)
 
     if args.check:
         out = {}
@@ -183,7 +188,7 @@ def main():
     np.savez(os.path.join(args.out, 'predictions.npz'), t_days=tw, t_offset=t0, zb_est=zb, zb_true=zb_true,
              zb_start=ZbSplineNumpy(sp, B['coef0'], zb_min).zb(tw), coef=c, depths_m=np.asarray(depths),
              theta_deep_est=th_deep, theta_obs=th_obs, theta_true=th_true, top_used=y_top)
-    plot(os.path.join(args.out, 'result.png'), args.run, tw + t0, zb_true, zb, depths, th_obs, y_top, th_deep)
+    plot(os.path.join(args.out, 'result.png'), args.pinn or args.run, tw + t0, zb_true, zb, depths, th_obs, y_top, th_deep)
     z = summary['zb_vs_truth']
     print(f"[cls] water table vs truth: RMSE {100 * z['rmse_m']:.2f} cm, bias {100 * z['bias_m']:+.2f}, largest "
           f"{100 * z['maxabs_m']:.2f}, r {z['r']:.4f}; inner {100 * summary['zb_vs_truth_inner']['rmse_m']:.2f} cm; "

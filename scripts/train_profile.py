@@ -66,10 +66,18 @@ def build(cfg, dev):
     noise_all = rng.normal(0.0, float(sc['noise_sigma']), th_true_all.shape)
     th_true_rec = th_true_all[:, cols]                               # noise-free truth at the chosen sensors
     th_obs_rec = (th_true_all + noise_all)[:, cols]
+    bias = sc.get('bias')                                            # optional constant offset per chosen sensor
+    if bias is not None:                                             # (a calibration error; the truth stays unbiased)
+        if len(bias) != len(cols):
+            raise ValueError(f'sensors.bias has {len(bias)} values for {len(cols)} sensors')
+        th_obs_rec = th_obs_rec + np.asarray(bias, dtype=float)[None, :]
     t0, t1 = float(wc['start_day']), float(wc['end_day'])
     k = (t_rec >= t0 - 1e-9) & (t_rec <= t1 + 1e-9)
     tw = t_rec[k] - t0
-    s = rec['soil']
+    s = np.array(rec['soil'], dtype=float)
+    names = ['theta_s', 'theta_r', 'alpha', 'n', 'Ks']
+    for key, f in (cfg.get('soil_factor') or {}).items():           # a wrong soil guess: the record's soil times f
+        s[names.index(key)] *= float(f)
     soil = SoilVG(theta_s=s[0], theta_r=s[1], alpha=s[2], n=s[3], Ks=s[4], L=float(cfg['scaling']['L']))
     sp = CubicBSpline1D(0.0, t1 - t0, float(cfg['zb_spline']['knot_days']))
     zb_min = float(cfg['zb_spline']['zb_min'])
@@ -106,7 +114,7 @@ def build(cfg, dev):
            'theta': torch.tensor(th_obs_rec[k].T.reshape(-1), device=dev).reshape(-1, 1)}
     return {'model': model, 'soil': soil, 'spline': sp, 'truth': truth, 'tw': tw, 'zb_true': zb_true, 'zb_hyd': zb_hyd,
             'th_obs': th_obs_rec[k], 'th_true': th_true_rec[k], 'depths': depths, 'obs': obs, 'sig_th': sig_th,
-            'sig_pde': sig_pde, 'rates': rates, 'coef0': np.asarray(coef0)}
+            'sig_pde': sig_pde, 'rates': rates, 'coef0': np.asarray(coef0), 'soil_params': [float(v) for v in s]}
 
 
 def collocation(n, Tw, dev, gen):
