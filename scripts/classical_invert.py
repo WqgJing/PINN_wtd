@@ -46,6 +46,8 @@ def main():
     ap.add_argument('--max_iter_picard', type=int, default=100)
     ap.add_argument('--delta', type=float, default=0.01, help='central-difference step, spline-coefficient units')
     ap.add_argument('--max_iter', type=int, default=30)
+    ap.add_argument('--rel_tol', type=float, default=1e-7, help='stop when a step lowers the cost by less than this '
+                                                                'fraction')
     ap.add_argument('--zc_min', type=float, default=0.05, help='least column length below the top sensor, m')
     args = ap.parse_args()
     tic0 = time.time()
@@ -157,7 +159,7 @@ def main():
         hist.append({'iter': it, 'cost': cost, 'lambda': lam, 'zb_rmse_m': zb_err(c), 'wall_s': time.time() - tic_fit})
         print(f"[cls {it:2d}] cost {cost:.5f} lambda {lam:.1e} |step| {np.abs(step).max():.2e} water table vs truth "
               f"{100 * zb_err(c):.2f} cm  {time.time() - tic_fit:.0f} s", flush=True)
-        if not accepted or rel < 1e-7 or np.abs(step).max() < 1e-6:
+        if not accepted or rel < args.rel_tol or np.abs(step).max() < 1e-6:
             break
     wall_fit = time.time() - tic_fit
 
@@ -167,7 +169,8 @@ def main():
     th_deep = th.reshape(len(deep), tw.size).T
     summary = {
         'top': args.top, 'smooth_hours': args.smooth_hours if args.top == 'smooth' else None,
-        'dt_hours': args.dt_hours, 'depths_m': depths, 'iterations': len(hist), 'solves': info['solves'],
+        'dt_hours': args.dt_hours, 'rel_tol': args.rel_tol, 'depths_m': depths, 'iterations': len(hist),
+        'solves': info['solves'],
         'batched_solves': info['batched_solves'], 'not_converged_max': info['not_converged_max'],
         'wall_fit_s': wall_fit, 'solve_s': info['solve_s'], 'wall_total_s': time.time() - tic0, 'cost': cost,
         'zb_vs_truth': tpf.score(zb, zb_true), 'zb_vs_truth_inner': tpf.score(zb[inner], zb_true[inner]),
