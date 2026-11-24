@@ -1,0 +1,8 @@
+# raw and derived data, results, trained networks and job logs stay out of git
+data/
+output/
+runs/
+logs/
+__pycache__/
+*.pyc
+.nfs*
