@@ -71,6 +71,15 @@ def build(cfg, dev):
         if len(bias) != len(cols):
             raise ValueError(f'sensors.bias has {len(bias)} values for {len(cols)} sensors')
         th_obs_rec = th_obs_rec + np.asarray(bias, dtype=float)[None, :]
+    # optional gaps: [[sensor index, first day, last day], ...] in record days; missing readings are left out of the
+    # data loss. Inputs that need a full series (memory features, start path) get a straight-line fill instead.
+    avail_rec = np.ones(th_obs_rec.shape, dtype=bool)
+    for j, a, b in (sc.get('gaps') or []):
+        avail_rec[(t_rec >= float(a) - 1e-9) & (t_rec <= float(b) + 1e-9), int(j)] = False
+    th_fill_rec = th_obs_rec.copy()
+    for j in range(th_obs_rec.shape[1]):
+        if not avail_rec[:, j].all():
+            th_fill_rec[:, j] = np.interp(t_rec, t_rec[avail_rec[:, j]], th_obs_rec[avail_rec[:, j], j])
     t0, t1 = float(wc['start_day']), float(wc['end_day'])
     k = (t_rec >= t0 - 1e-9) & (t_rec <= t1 + 1e-9)
     tw = t_rec[k] - t0
@@ -86,7 +95,7 @@ def build(cfg, dev):
     depths = [float(d) for d in sc['depths_m']]
     d_top, d_deep = depths[0], depths[-1]
     # hydrostatic reading of the deepest sensor: its height above the water table at rest, from the retention curve
-    zb_hyd = d_deep - soil.h_from_theta(th_obs_rec[k, -1])
+    zb_hyd = d_deep - soil.h_from_theta(th_fill_rec[k, -1])
     init = str(cfg['init'])
     if init == 'truth':
         coef0 = truth.coef
@@ -99,7 +108,7 @@ def build(cfg, dev):
     sink = RootSink(rec['t_nodes'], rec['tp_nodes_mmd']) if cfg['physics'].get('root_sink', True) else None
     mem = None
     if cfg['net'].get('memory_taus_days'):
-        top = th_obs_rec[:, 0]
+        top = th_fill_rec[:, 0]
         mem = ForcingMemoryFeatures([(t_rec, top - top.mean()), (rec['t_nodes'], rec['tp_nodes_mmd'])],
                                     cfg['net']['memory_taus_days'])
     model = ProfilePINN(soil, sp, coef0, zb_min, d_top, t1 - t0, t0, sink=sink, memories=mem,
@@ -107,14 +116,18 @@ def build(cfg, dev):
                         fourier_periods_days=cfg['net']['fourier_periods_days'],
                         path_taus_days=cfg['net']['path_taus_days']).to(dev)
     sig_th = float(cfg['sigmas']['theta'])
-    rates = [signal_rate_scale(tw, th_obs_rec[k, j], soil, sig_th) for j in range(len(depths))]
+    avail = avail_rec[k]                                             # (n_t, n_sensors) in the window
+    rates = [signal_rate_scale(tw[avail[:, j]], th_obs_rec[k, j][avail[:, j]], soil, sig_th)
+             for j in range(len(depths))]
     sig_pde = float(cfg['sigmas'].get('pde_factor', 1.0)) * float(np.sqrt(np.mean(np.square(rates))))
-    obs = {'t': torch.tensor(np.tile(tw, len(depths)), device=dev).reshape(-1, 1),
-           'depth': torch.tensor(np.repeat(depths, tw.size), device=dev).reshape(-1, 1),
-           'theta': torch.tensor(th_obs_rec[k].T.reshape(-1), device=dev).reshape(-1, 1)}
+    keep = avail.T.reshape(-1)                                       # sensor-major, as the arrays below
+    obs = {'t': torch.tensor(np.tile(tw, len(depths))[keep], device=dev).reshape(-1, 1),
+           'depth': torch.tensor(np.repeat(depths, tw.size)[keep], device=dev).reshape(-1, 1),
+           'theta': torch.tensor(th_obs_rec[k].T.reshape(-1)[keep], device=dev).reshape(-1, 1)}
     return {'model': model, 'soil': soil, 'spline': sp, 'truth': truth, 'tw': tw, 'zb_true': zb_true, 'zb_hyd': zb_hyd,
-            'th_obs': th_obs_rec[k], 'th_true': th_true_rec[k], 'depths': depths, 'obs': obs, 'sig_th': sig_th,
-            'sig_pde': sig_pde, 'rates': rates, 'coef0': np.asarray(coef0), 'soil_params': [float(v) for v in s]}
+            'th_obs': np.where(avail, th_obs_rec[k], np.nan), 'th_true': th_true_rec[k], 'depths': depths, 'obs': obs,
+            'sig_th': sig_th, 'sig_pde': sig_pde, 'rates': rates, 'coef0': np.asarray(coef0),
+            'soil_params': [float(v) for v in s], 'obs_avail': avail}
 
 
 def collocation(n, Tw, dev, gen):
@@ -264,7 +277,7 @@ def main():
                'zb_vs_truth_inner': score(zb[inner], B['zb_true'][inner]),
                'hydrostatic_vs_truth': score(B['zb_hyd'], B['zb_true']),
                'start_vs_truth': score(ZbSplineNumpy(B['spline'], B['coef0'], m.zb_min).zb(tw), B['zb_true']),
-               'theta_vs_obs_rmse': [float(np.sqrt(np.mean((th[:, j] - B['th_obs'][:, j]) ** 2)))
+               'theta_vs_obs_rmse': [float(np.sqrt(np.nanmean((th[:, j] - B['th_obs'][:, j]) ** 2)))
                                      for j in range(len(B['depths']))],
                'theta_vs_truth_rmse': [float(np.sqrt(np.mean((th[:, j] - B['th_true'][:, j]) ** 2)))
                                        for j in range(len(B['depths']))]}

@@ -69,6 +69,12 @@ def main():
     t0 = float(cfg['window']['start_day'])
     tw, depths, th_obs, th_true = B['tw'], B['depths'], B['th_obs'], B['th_true']
     d_top, deep = depths[0], depths[1:]
+    if np.isnan(th_obs[:, 1:]).any():
+        raise SystemExit('gaps are supported in the top (boundary) sensor only')
+    top_obs = th_obs[:, 0].copy()
+    if np.isnan(top_obs).any():                     # standard practice: straight-line fill of a gap in the boundary
+        ok = np.isfinite(top_obs)
+        top_obs = np.interp(tw, tw[ok], top_obs[ok])
     sig = float(cfg['sigmas']['theta'])
     sp, zb_min = B['spline'], float(cfg['zb_spline']['zb_min'])
 
@@ -83,8 +89,7 @@ def main():
     th_s, th_r = soil['theta_s'], soil['theta_r']
 
     def top_series(kind):
-        y = {'true': th_true[:, 0], 'raw': th_obs[:, 0],
-             'smooth': centred_mean(th_obs[:, 0], args.smooth_hours)}[kind]
+        y = {'true': th_true[:, 0], 'raw': top_obs, 'smooth': centred_mean(top_obs, args.smooth_hours)}[kind]
         return y, np.clip((np.interp(t_s, tw, y) - th_r) / (th_s - th_r), 1e-6, 1.0 - 1e-6)
 
     info = {'solves': 0, 'batched_solves': 0, 'not_converged_max': 0.0, 'solve_s': 0.0}
@@ -112,7 +117,8 @@ def main():
     rms = lambda v: float(np.sqrt(np.mean(np.square(v))))
     print(f"[cls] run {args.run}: sensors {depths} m (top {d_top} m is the boundary); window {t0}-"
           f"{t0 + tw[-1]} d; {sp.n_coef} coefficients; solver dt {args.dt_hours} h, {n_s - 1} steps; soil given "
-          f"{ {k: round(v, 6) for k, v in soil.items()} }; mean top reading {th_obs[:, 0].mean():.4f}", flush=True)
+          f"{ {k: round(v, 6) for k, v in soil.items()} }; mean top reading {np.nanmean(th_obs[:, 0]):.4f}; top hours missing "
+          f"{int(np.isnan(th_obs[:, 0]).sum())}", flush=True)
 
     if args.check:
         out = {}
