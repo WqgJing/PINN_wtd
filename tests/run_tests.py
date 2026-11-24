@@ -23,8 +23,10 @@ D_TOP = 0.05
 def make(path_m, randomise=False):
     """path_m: water-table depth [m] at the knots' fit points (constant or array over 0..20 d)."""
     t = np.linspace(0, 20, 481)
-    zb = np.full_like(t, path_m) if np.ndim(path_m) == 0 else np.interp(t, np.linspace(0, 20, len(path_m)), path_m)
-    coef = ZbSplineNumpy.fit(SP, t, zb, 0.05).coef
+    if np.ndim(path_m) == 0:      # exactly constant (a least-squares fit is constant only to ~1e-8)
+        coef = np.full(SP.n_coef, np.log(np.expm1(float(path_m) - 0.05)))
+    else:
+        coef = ZbSplineNumpy.fit(SP, t, np.interp(t, np.linspace(0, 20, len(path_m)), path_m), 0.05).coef
     m = ProfilePINN(SOIL, SP, coef, 0.05, D_TOP, 20.0, 35.0, width=16, depth=2)
     if randomise:
         torch.nn.init.normal_(m.N.net[-1].weight, std=0.05)
