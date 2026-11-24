@@ -1,7 +1,7 @@
 # Four sensors (5, 20, 40, 60 cm), window days 35 - 55 of the lowered-water-table synthetic record.
 data:
-  npz: /storage/project/r-rbras6-0/jjason3/wtd_profile_pinn/output/syn_nc2_spring23_deep/synthetic.npz
-  truth_key: theta_sensors_check     # the 1/4 h solution (the 1 h one is off by up to 0.024 at wetting fronts)
+  npz: /storage/project/r-rbras6-0/jjason3/wtd_profile_pinn/output/syn_nc2_spring23_deep_dt16/synthetic.npz
+  truth_key: theta_sensors_check     # the 1/16 h solution (1/4 h is off by up to 0.009 at wetting fronts, 1 h by 0.028)
 window:
   start_day: 35.0
   end_day: 55.0
