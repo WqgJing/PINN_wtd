@@ -59,9 +59,13 @@ def build(cfg, dev):
     t_rec = rec['t_days']
     all_depths = [float(d) for d in rec['sensor_depths_m']]
     cols = [all_depths.index(float(d)) for d in sc['depths_m']]
-    th_true_rec = rec[dc['truth_key']][:, cols]                      # noise-free truth at the chosen sensors
+    # noise drawn for EVERY depth of the record, then the chosen sensors taken: a sensor at a given depth has the same
+    # noise whichever other sensors are used (runs before 2026-11-24 drew it for the chosen sensors only)
+    th_true_all = rec[dc['truth_key']]
     rng = np.random.default_rng(int(sc['noise_seed']))
-    th_obs_rec = th_true_rec + rng.normal(0.0, float(sc['noise_sigma']), th_true_rec.shape)
+    noise_all = rng.normal(0.0, float(sc['noise_sigma']), th_true_all.shape)
+    th_true_rec = th_true_all[:, cols]                               # noise-free truth at the chosen sensors
+    th_obs_rec = (th_true_all + noise_all)[:, cols]
     t0, t1 = float(wc['start_day']), float(wc['end_day'])
     k = (t_rec >= t0 - 1e-9) & (t_rec <= t1 + 1e-9)
     tw = t_rec[k] - t0
