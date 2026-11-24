@@ -71,6 +71,13 @@ def build(cfg, dev):
         if len(bias) != len(cols):
             raise ValueError(f'sensors.bias has {len(bias)} values for {len(cols)} sensors')
         th_obs_rec = th_obs_rec + np.asarray(bias, dtype=float)[None, :]
+    drift = sc.get('drift')                                          # optional linear drift per chosen sensor: 0 at
+    if drift is not None:                                            # the window start, the value at its end
+        if len(drift) != len(cols):
+            raise ValueError(f'sensors.drift has {len(drift)} values for {len(cols)} sensors')
+        ws, we = float(wc['start_day']), float(wc['end_day'])
+        ramp = np.clip((t_rec - ws) / (we - ws), 0.0, 1.0)
+        th_obs_rec = th_obs_rec + ramp[:, None] * np.asarray(drift, dtype=float)[None, :]
     # optional gaps: [[sensor index, first day, last day], ...] in record days; missing readings are left out of the
     # data loss. Inputs that need a full series (memory features, start path) get a straight-line fill instead.
     avail_rec = np.ones(th_obs_rec.shape, dtype=bool)
