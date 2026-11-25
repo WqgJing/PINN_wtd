@@ -53,6 +53,62 @@ def score(est, ref):
             'r': float(np.corrcoef(est, ref)[0, 1])}
 
 
+def contaminate(th, avail, t, ws, we, spec):
+    """Random sensor errors (test #2), drawn per contaminated sensor with spec['seed'], in this order: calibration
+    gain about the sensor's window mean, offset, linear drift over the window (0 before, full after), extra noise,
+    spikes, gaps (missing hours inside the window). spec['sensors']: indices among the chosen sensors."""
+    rng = np.random.default_rng(int(spec['seed']))
+    th, avail = th.copy(), avail.copy()
+    win = (t >= ws - 1e-9) & (t <= we + 1e-9)
+    ramp = np.clip((t - ws) / (we - ws), 0.0, 1.0)
+    drawn = []
+    for j in spec['sensors']:
+        j = int(j)
+        g = rng.uniform(*spec.get('gain', [0.85, 1.15]))
+        a = rng.uniform(-spec.get('offset_max', 0.03), spec.get('offset_max', 0.03))
+        b = rng.uniform(-spec.get('drift_max', 0.02), spec.get('drift_max', 0.02))
+        e = rng.uniform(0.0, spec.get('extra_noise_max', 0.008))
+        m = th[win, j].mean()
+        th[:, j] = m + g * (th[:, j] - m) + a + b * ramp + rng.normal(0.0, e, t.size)
+        n_sp = int(rng.binomial(t.size, spec.get('spike_frac', 0.01)))
+        idx = rng.choice(t.size, n_sp, replace=False)
+        th[idx, j] += rng.choice([-1.0, 1.0], n_sp) * rng.uniform(*spec.get('spike_mag', [0.03, 0.08]), n_sp)
+        gaps = []
+        for _ in range(int(rng.integers(0, int(spec.get('max_gaps', 3)) + 1))):
+            length = rng.uniform(*spec.get('gap_hours', [6.0, 72.0])) / 24.0
+            g0 = rng.uniform(ws, we - length)
+            avail[(t >= g0) & (t <= g0 + length), j] = False
+            gaps.append([round(float(g0), 3), round(float(g0 + length), 3)])
+        drawn.append({'sensor': j, 'gain': round(float(g), 4), 'offset': round(float(a), 4),
+                      'drift_end': round(float(b), 4), 'extra_noise_sd': round(float(e), 4), 'spikes': n_sp,
+                      'gaps_days': gaps})
+    return th, avail, drawn
+
+
+def quality_control(th, avail, theta_s, tol=0.015, k_sigma=5.0, floor=0.025):
+    """Standard cleanup, the same for every method: readings more than tol above theta_s (impossible even allowing
+    for noise; tol = 3 x the 0.005 noise) are removed, and isolated spikes (a
+    reading that differs from BOTH neighbours in the same direction by more than max(k_sigma x noise, floor), the
+    noise estimated robustly from the hour-to-hour differences) are removed. A step (rain onset) is kept."""
+    avail = avail.copy()
+    x = np.where(avail, th, np.nan)
+    above = avail & (th > theta_s + tol)
+    spike = np.zeros_like(avail)
+    for j in range(th.shape[1]):
+        d = np.diff(x[:, j])
+        d = d[np.isfinite(d)]
+        sd = 1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2.0) if d.size else 0.0
+        thr = max(k_sigma * sd, floor)
+        d1 = x[1:-1, j] - x[:-2, j]
+        d2 = x[1:-1, j] - x[2:, j]
+        with np.errstate(invalid='ignore'):
+            spike[1:-1, j] = (np.sign(d1) == np.sign(d2)) & (np.minimum(np.abs(d1), np.abs(d2)) > thr)
+    spike &= avail
+    removed = above | spike
+    return avail & ~removed, {'above_theta_s': [int(v) for v in above.sum(axis=0)],
+                              'spikes': [int(v) for v in spike.sum(axis=0)]}
+
+
 def build(cfg, dev):
     dc, wc, sc = cfg['data'], cfg['window'], cfg['sensors']
     rec = dict(np.load(dc['npz'], allow_pickle=False))
@@ -83,6 +139,13 @@ def build(cfg, dev):
     avail_rec = np.ones(th_obs_rec.shape, dtype=bool)
     for j, a, b in (sc.get('gaps') or []):
         avail_rec[(t_rec >= float(a) - 1e-9) & (t_rec <= float(b) + 1e-9), int(j)] = False
+    contamination, qc_info = None, None
+    if sc.get('contamination'):                                     # random sensor errors (test #2); truth unchanged
+        th_obs_rec, avail_rec, contamination = contaminate(th_obs_rec, avail_rec, t_rec, float(wc['start_day']),
+                                                           float(wc['end_day']), sc['contamination'])
+    if sc.get('qc'):                                                # standard cleanup, the same for every method
+        theta_s_given = float(rec['soil'][0]) * float((cfg.get('soil_factor') or {}).get('theta_s', 1.0))
+        avail_rec, qc_info = quality_control(th_obs_rec, avail_rec, theta_s_given, tol=float(sc.get('qc_tol', 0.015)))
     th_fill_rec = th_obs_rec.copy()
     for j in range(th_obs_rec.shape[1]):
         if not avail_rec[:, j].all():
@@ -134,7 +197,8 @@ def build(cfg, dev):
     return {'model': model, 'soil': soil, 'spline': sp, 'truth': truth, 'tw': tw, 'zb_true': zb_true, 'zb_hyd': zb_hyd,
             'th_obs': np.where(avail, th_obs_rec[k], np.nan), 'th_true': th_true_rec[k], 'depths': depths, 'obs': obs,
             'sig_th': sig_th, 'sig_pde': sig_pde, 'rates': rates, 'coef0': np.asarray(coef0),
-            'soil_params': [float(v) for v in s], 'obs_avail': avail}
+            'soil_params': [float(v) for v in s], 'obs_avail': avail, 'contamination': contamination,
+            'qc': qc_info}
 
 
 def collocation(n, Tw, dev, gen):
@@ -234,6 +298,9 @@ def main():
           f"T = {m.T_days:.3f} d", flush=True)
     print(f"[train] start path vs truth (scoring only): {score(m.zb(torch.tensor(B['tw'], device=dev).reshape(-1, 1)).detach().cpu().numpy().reshape(-1), B['zb_true'])}", flush=True)
     print(f"[train] hydrostatic reading vs truth (scoring only): {score(B['zb_hyd'], B['zb_true'])}", flush=True)
+    if B['contamination'] is not None or B['qc'] is not None:
+        print(f"[train] contamination {B['contamination']}; qc removed {B['qc']}; readings available per sensor "
+              f"{[int(v) for v in B['obs_avail'].sum(axis=0)]} of {B['tw'].size}", flush=True)
 
     net_params = [p for n_, p in m.named_parameters() if n_ != 'coef']
     lr, lr_end, steps = float(tc['lr']), float(tc['lr_final']), int(tc['steps'])
@@ -281,6 +348,7 @@ def main():
     summary = {'mode': mode, 'init': cfg['init'], 'seed': int(tc['seed']), 'depths_m': B['depths'],
                'sigma_theta': B['sig_th'], 'sigma_pde': B['sig_pde'], 'steps': steps, 'wall_s': time.time() - tic,
                'held_out': val, 'zb_vs_truth': score(zb, B['zb_true']),
+               'contamination': B['contamination'], 'qc_removed': B['qc'],
                'zb_vs_truth_inner': score(zb[inner], B['zb_true'][inner]),
                'hydrostatic_vs_truth': score(B['zb_hyd'], B['zb_true']),
                'start_vs_truth': score(ZbSplineNumpy(B['spline'], B['coef0'], m.zb_min).zb(tw), B['zb_true']),

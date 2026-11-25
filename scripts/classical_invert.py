@@ -51,6 +51,9 @@ def main():
     ap.add_argument('--rel_tol', type=float, default=1e-7, help='stop when a step lowers the cost by less than this '
                                                                 'fraction')
     ap.add_argument('--zc_min', type=float, default=0.05, help='least column length below the top sensor, m')
+    ap.add_argument('--est_top', action='store_true', help='fit a constant offset and a linear drift of the top '
+                                                           'sensor with the water table (two extra unknowns)')
+    ap.add_argument('--delta_top', type=float, default=0.002, help='central-difference step of those two, m3/m3')
     args = ap.parse_args()
     tic0 = time.time()
     os.makedirs(args.out, exist_ok=True)
@@ -69,8 +72,6 @@ def main():
     t0 = float(cfg['window']['start_day'])
     tw, depths, th_obs, th_true = B['tw'], B['depths'], B['th_obs'], B['th_true']
     d_top, deep = depths[0], depths[1:]
-    if np.isnan(th_obs[:, 1:]).any():
-        raise SystemExit('gaps are supported in the top (boundary) sensor only')
     top_obs = th_obs[:, 0].copy()
     if np.isnan(top_obs).any():                     # standard practice: straight-line fill of a gap in the boundary
         ok = np.isfinite(top_obs)
@@ -95,13 +96,15 @@ def main():
     info = {'solves': 0, 'batched_solves': 0, 'not_converged_max': 0.0, 'solve_s': 0.0}
 
     def forward(C, se_top):
-        """theta at the deeper sensors [B, n_deep * n_obs] (sensor-major) for coefficient rows C [B, n_coef]."""
+        """theta at the deeper sensors [B, n_deep * n_obs] (sensor-major) for coefficient rows C [B, n_coef]; se_top
+        [n_s] (shared) or [B, n_s] (one boundary series per row)."""
         C = np.atleast_2d(C)
         zb = np.stack([ZbSplineNumpy(sp, c, zb_min).zb(t_s) for c in C])
         zc = np.maximum(zb - d_top, args.zc_min)
+        se_rows = np.tile(se_top, (C.shape[0], 1)) if np.ndim(se_top) == 1 else se_top
         tic = time.time()
         try:
-            A = run_top(solver, Sink, fem_cfg, t_s, zc, np.tile(se_top, (C.shape[0], 1)), tp_s, d_top)
+            A = run_top(solver, Sink, fem_cfg, t_s, zc, se_rows, tp_s, d_top)
         except Exception as e:                                   # a failed solve is a rejected step, not a crash
             print(f"[fem] solver failed: {type(e).__name__}: {e}", flush=True)
             return np.full((C.shape[0], len(deep) * tw.size), np.nan)
@@ -113,8 +116,9 @@ def main():
         return np.concatenate(th, axis=1)
 
     y = th_obs[:, 1:].T.reshape(-1)
+    ok = np.isfinite(y)                                         # missing interior readings are left out of the cost
     y_true = th_true[:, 1:].T.reshape(-1)
-    rms = lambda v: float(np.sqrt(np.mean(np.square(v))))
+    rms = lambda v: float(np.sqrt(np.nanmean(np.square(v))))
     print(f"[cls] run {args.run}: sensors {depths} m (top {d_top} m is the boundary); window {t0}-"
           f"{t0 + tw[-1]} d; {sp.n_coef} coefficients; solver dt {args.dt_hours} h, {n_s - 1} steps; soil given "
           f"{ {k: round(v, 6) for k, v in soil.items()} }; mean top reading {np.nanmean(th_obs[:, 0]):.4f}; top hours missing "
@@ -140,26 +144,50 @@ def main():
         return
 
     y_top, se_top = top_series(args.top)
+    ramp_s = t_s / t_s[-1]                                      # drift of the top sensor: 0 at the start, b at the end
+
+    def boundary(P):
+        """Top boundary series [B, n_s] for parameter rows P: with --est_top the last two columns are the top
+        sensor's offset a and drift b, removed from its reading before it becomes the boundary."""
+        P = np.atleast_2d(P)
+        if not args.est_top:
+            return se_top
+        y_s = np.interp(t_s, tw, y_top)[None, :] - P[:, -2:-1] - P[:, -1:] * ramp_s[None, :]
+        return np.clip((y_s - th_r) / (th_s - th_r), 1e-6, 1.0 - 1e-6)
+
+    def fwd(P):
+        P = np.atleast_2d(P)
+        return forward(P[:, :sp.n_coef], boundary(P))
+
+    def cost_of(th_):
+        return float(np.mean(((th_[ok] - y[ok]) / sig) ** 2))
+
     zb_true = B['zb_true']
-    zb_err = lambda cc: rms(ZbSplineNumpy(sp, cc, zb_min).zb(tw) - zb_true)
+    zb_err = lambda cc: rms(ZbSplineNumpy(sp, cc[:sp.n_coef], zb_min).zb(tw) - zb_true)
     tic_fit = time.time()
     c = np.asarray(B['coef0'], dtype=float).copy()
+    deltas = np.full(c.size, args.delta)
+    if args.est_top:                                            # start with no offset and no drift
+        c = np.concatenate([c, [0.0, 0.0]])
+        deltas = np.concatenate([deltas, [args.delta_top, args.delta_top]])
     n_c = c.size
-    th = forward(c, se_top)[0]
-    cost = float(np.mean(((th - y) / sig) ** 2))
+    th = fwd(c)[0]
+    cost = cost_of(th)
     lam, hist = 1e-2, []
-    print(f"[cls] start: cost {cost:.4f}, water table vs truth {100 * zb_err(c):.2f} cm (scoring only)", flush=True)
+    print(f"[cls] start: cost {cost:.4f}, water table vs truth {100 * zb_err(c):.2f} cm (scoring only); unknowns {n_c}; "
+          f"interior readings used {int(ok.sum())} of {ok.size}", flush=True)
     for it in range(args.max_iter):
-        res = forward(np.concatenate([c + args.delta * np.eye(n_c), c - args.delta * np.eye(n_c)]), se_top)
+        E = np.diag(deltas)
+        res = fwd(np.concatenate([c + E, c - E]))
         dif = res[:n_c] - res[n_c:]
-        J = np.where(np.isfinite(dif), dif, 0.0).T / (2 * args.delta) / sig
-        r = (th - y) / sig
+        J = (np.where(np.isfinite(dif), dif, 0.0).T / (2 * deltas[None, :]) / sig)[ok]
+        r = ((th - y) / sig)[ok]
         A, g = J.T @ J, J.T @ r
         accepted, rel = False, 0.0
         for _ in range(10):
             step = -np.linalg.solve(A + lam * np.diag(np.diag(A)) + 1e-12 * np.eye(n_c), g)
-            th_new = forward(c + step, se_top)[0]
-            cost_new = float(np.mean(((th_new - y) / sig) ** 2))
+            th_new = fwd(c + step)[0]
+            cost_new = cost_of(th_new)
             if np.isfinite(cost_new) and cost_new < cost:
                 rel = (cost - cost_new) / cost
                 c, th, cost = c + step, th_new, cost_new
@@ -168,13 +196,14 @@ def main():
                 break
             lam *= 4.0
         hist.append({'iter': it, 'cost': cost, 'lambda': lam, 'zb_rmse_m': zb_err(c), 'wall_s': time.time() - tic_fit})
+        top_txt = f"; top offset {c[-2]:+.4f}, drift {c[-1]:+.4f}" if args.est_top else ''
         print(f"[cls {it:2d}] cost {cost:.5f} lambda {lam:.1e} |step| {np.abs(step).max():.2e} water table vs truth "
-              f"{100 * zb_err(c):.2f} cm  {time.time() - tic_fit:.0f} s", flush=True)
+              f"{100 * zb_err(c):.2f} cm  {time.time() - tic_fit:.0f} s{top_txt}", flush=True)
         if not accepted or rel < args.rel_tol or np.abs(step).max() < 1e-6:
             break
     wall_fit = time.time() - tic_fit
 
-    m = ZbSplineNumpy(sp, c, zb_min)
+    m = ZbSplineNumpy(sp, c[:sp.n_coef], zb_min)
     zb = m.zb(tw)
     inner = (tw >= 1.0) & (tw <= tw[-1] - 1.0)
     th_deep = th.reshape(len(deep), tw.size).T
@@ -188,7 +217,11 @@ def main():
         'start_vs_truth': tpf.score(ZbSplineNumpy(sp, B['coef0'], zb_min).zb(tw), zb_true),
         'deep_vs_obs_rmse': [rms(th_deep[:, j] - th_obs[:, 1 + j]) for j in range(len(deep))],
         'deep_vs_truth_rmse': [rms(th_deep[:, j] - th_true[:, 1 + j]) for j in range(len(deep))],
-        'top_vs_truth_rmse': rms(y_top - th_true[:, 0]), 'history': hist}
+        'top_vs_truth_rmse': rms(y_top - th_true[:, 0]), 'est_top': bool(args.est_top),
+        'top_offset_est': float(c[-2]) if args.est_top else None,
+        'top_drift_est': float(c[-1]) if args.est_top else None,
+        'contamination': B.get('contamination'), 'qc_removed': B.get('qc'),
+        'interior_readings_used': int(ok.sum()), 'history': hist}
     with open(os.path.join(args.out, 'summary.json'), 'w') as f:
         json.dump(summary, f, indent=1)
     np.savez(os.path.join(args.out, 'predictions.npz'), t_days=tw, t_offset=t0, zb_est=zb, zb_true=zb_true,
