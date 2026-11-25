@@ -21,14 +21,18 @@ def load_fem(root):
     return mods['fem_pytorch'].ForwardSensitivitySolverPyTorch, mods['root_water_uptake'].RootWaterUptakeTorch
 
 
-def run_fem(Solver, Sink, fem_cfg, soil_params, t_days, zb, q, tp_mmd, n_nodes):
+def run_fem(Solver, Sink, fem_cfg, soil_params, t_days, zb, q, tp_mmd, n_nodes, root_beta=None):
     """One batched solve. zb, q [m/s, + up], tp_mmd [mm/d]: arrays [B, n_t] on t_days. Each member starts from the
     hydrostatic profile over its zb(0); the Feddes root sink takes its transpiration from tp_mmd (0: no sink).
+    root_beta: Gale & Grigal extinction coefficient of the root distribution (None: the solver's default, 0.96).
     Returns numpy arrays: xi [n_nodes], theta and h [B, n_t, n_nodes] (last node = surface), converged, n_iters."""
     solver = Solver(soil_params, L=fem_cfg['L'], n_nodes=n_nodes, device='cpu')
     xi = solver.fem.xi
     h0 = -(1.0 + xi).unsqueeze(0) * torch.as_tensor(zb[:, :1], dtype=xi.dtype)
-    sink = Sink(tp_mmd, device='cpu', Tp_units='mm/day')
+    kw = {}
+    if root_beta is not None:
+        kw['root_params'] = sys.modules['root_water_uptake'].RootDistributionParameters(beta=float(root_beta))
+    sink = Sink(tp_mmd, device='cpu', Tp_units='mm/day', **kw)
     res = solver.solve(t_days * 86400.0, zb, q, theta_initial=solver.vg.theta(h0 / fem_cfg['L']), sink_func=sink,
                        max_iter=fem_cfg['max_iter'], tol=fem_cfg['tol'], omega=fem_cfg['omega'], return_full=True)
     out = {k: res[k].cpu().numpy() for k in ('xi', 'theta', 'h', 'converged', 'n_iters')}

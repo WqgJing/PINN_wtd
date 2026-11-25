@@ -1,0 +1,45 @@
+# As syn_nc2_spring23_deep, with the check solve at 1/16 h (to test the 1/4 h solution as the truth).
+site:
+  name: US-NC2
+  amf_csv: /storage/project/r-rbras6-0/jjason3/fem_validation/uploaded_data/AMF_US-NC2_BASE-BADM_19-5/AMF_US-NC2_BASE_HH_19-5.csv
+  columns:
+    le: LE_1_1_1
+    p: P_1_1_1
+    wtd: WTD_1_1_1
+  gldas_csv: /storage/project/r-rbras6-0/jjason3/wtd_profile_pinn/data/gldas/gldas_well354227076232901_2015_2024.csv
+window:
+  start: 2023-03-01T00:00
+  n_days: 92
+forcing:
+  node_hours: 1
+  fill_half_window_days: 7
+  transpiration_fraction: gldas      # daily T_p / (E_soil + T_p) of the GLDAS pixel
+water_table:
+  source: well_spline                # daily-knot spline fit of the site's well record
+  knot_days: 1.0
+  zb_min: 0.05
+  max_gap_hours: 3
+  offset_m: 0.45                     # record + 0.45 m: 0.68 - 1.35 m instead of 0.23 - 0.90 m
+soil:                                # van Genuchten-Mualem, calibrated at US-NC2 (window of 10 Sep 2023)
+  theta_s: 0.4193514611932402
+  theta_r: 5.662363170057762e-09
+  alpha: 0.822311364445854
+  n: 2.7469217167092075
+  Ks: 1.922838127196462e-06
+fem:
+  root: /storage/project/r-rbras6-0/jjason3/wtd_pipeline
+  L: 12.0
+  n_nodes: 101
+  max_iter: 50
+  tol: 1.0e-05
+  omega: 0.5
+  dt_hours: 1.0
+  check_dt_hours: 0.0625              # check of the 1/4 h solution used as truth
+sensors:
+  depths_m: [0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60]
+  require_above_water_table: true
+  plot_depths_m: [0.05, 0.20, 0.40, 0.60]
+output:
+  dir: /storage/project/r-rbras6-0/jjason3/wtd_profile_pinn/output/syn_nc2_spring23_deep_dt16_roots098
+roots:                               # truth root distribution (Gale & Grigal beta); the inversions keep 0.96
+  beta: 0.98

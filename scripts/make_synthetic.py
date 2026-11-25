@@ -147,7 +147,11 @@ def main():
     tp_n = ft * s['et'] * 86400e3                            # mm/d
     Solver, Sink = load_fem(fc['root'])
     on = lambda t, y: np.interp(t, t_n, y)
-    A = run_fem(Solver, Sink, fc, soil, t_h, zb[None], on(t_h, q_n)[None], on(t_h, tp_n)[None], fc['n_nodes'])
+    root_beta = (cfg.get('roots') or {}).get('beta')                 # None: the solver's default (0.96)
+    if root_beta is not None:
+        print(f"[syn] root distribution beta {float(root_beta)} (truth)", flush=True)
+    A = run_fem(Solver, Sink, fc, soil, t_h, zb[None], on(t_h, q_n)[None], on(t_h, tp_n)[None], fc['n_nodes'],
+                root_beta=root_beta)
     depths = [float(d) for d in sc['depths_m']]
     th = point_sensors(A['xi'], A['theta'][0], zb, depths, soil['theta_s'])
     if args.no_check:
@@ -155,7 +159,7 @@ def main():
     else:
         t_c = hourly_times(n_days, fc['check_dt_hours'])
         C = run_fem(Solver, Sink, fc, soil, t_c, path.zb(t_c)[None], on(t_c, q_n)[None], on(t_c, tp_n)[None],
-                    fc['n_nodes'])
+                    fc['n_nodes'], root_beta=root_beta)
         k_c = np.round(t_h / (fc['check_dt_hours'] / 24.0)).astype(int)
         th_c = point_sensors(C['xi'], C['theta'][0][k_c], zb, depths, soil['theta_s'])
     below = np.array([[d >= z for d in depths] for z in zb])
@@ -173,6 +177,7 @@ def main():
     rain_d, et_d, tp_d = daily(t_n, s['p'], n_days), daily(t_n, s['et'], n_days), daily(t_n, tp_n / 86400e3, n_days)
     summary = {'site': cfg['site']['name'], 'start': str(s['t0']), 'n_days': n_days, **s['info'],
                'zb_range_m': [float(zb.min()), float(zb.max())], 'zb_offset_m': offset, 'n_coef': sp.n_coef,
+               'root_beta': None if root_beta is None else float(root_beta),
                'deepest_sensor_min_gap_m': float(zb.min() - max(depths_req)),
                'rain_mm': float(rain_d.sum()), 'et_mm': float(et_d.sum()), 'tp_mm': float(tp_d.sum()),
                'ft_mean': float(ft.mean()), 'fem_converged_frac': float(A['converged'].mean()),
