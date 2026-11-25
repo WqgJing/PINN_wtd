@@ -1,35 +1,39 @@
-# Water-table depth from soil moisture at several depths with a physics-informed neural network
+# Water-table depth from soil moisture at several depths
 
 Goal: recover the water-table depth zb(t) above a shallow water table from soil-moisture sensors at several depths,
-with known soil hydraulic properties, WITHOUT the surface flux and WITHOUT an initial soil profile. A physics-informed
-neural network represents the pressure head between the top sensor and the water table; the water-table path is a
-spline whose coefficients are trained together with the network.
+with known soil hydraulic properties, WITHOUT the surface flux and WITHOUT an initial soil profile.
 
-Why a PINN here: a numerical solver needs the upper boundary (flux or pressure) and the initial profile; a PINN can
-replace both by the sensor data inside the domain. No published inversion of the water table from multi-depth soil
-moisture was found in a quick search (23 Nov 2026; see `tasks/todo.md`).
+Two inversions of the same problem are included:
 
-Status: set up on 23 Nov 2026. Synthetic study first; nothing has been run. The plan with fixed pass criteria is in
-`tasks/todo.md` and is approved before any run.
+- **PINN** (`scripts/train_profile.py`, `src/wpinn/model.py`): a physics-informed neural network represents the
+  pressure head between the top sensor and the water table (h = 0 at the water table by construction); the
+  water-table path is a daily cubic spline whose coefficients are trained together with the network. All sensors,
+  the top one included, are treated as data; no initial profile is needed.
+- **Classical FEM inversion** (`scripts/classical_invert.py`, `src/wpinn/fem_top.py`): a finite-element Richards
+  solver on the column from the top sensor to the water table, with the top sensor as a fixed-moisture (Dirichlet)
+  boundary and a hydrostatic start; the same spline coefficients are fitted by Levenberg-Marquardt to the deeper
+  sensors. Optionally the top sensor's offset and drift are fitted as two extra unknowns (`--est_top`).
+
+Synthetic truth records are made with the finite-element solver (`scripts/make_synthetic.py`), optionally with a
+different root distribution or with soil varying with depth (`src/wpinn/fem_hetero.py`). Sensor errors (offsets,
+drift, gain, noise, spikes, gaps, clock shifts, sparse sampling) and a standard quality control are options of the
+data builder in `scripts/train_profile.py`, shared by both inversions.
 
 ## Layout
 
 | folder | content | in git |
 |---|---|---|
-| `src/wpinn/` | model code | yes |
-| `scripts/` | entry points run through `hpc/` | yes |
-| `configs/` | run configurations (YAML) | yes |
+| `src/wpinn/` | model, physics, solver wrappers | yes |
+| `scripts/` | entry points run through `hpc/`, plotting scripts | yes |
+| `configs/` | run and synthetic-record configurations (YAML) | yes |
 | `tests/` | unit tests | yes |
-| `hpc/` | SLURM scripts (`run_script_cpu.slurm`, `run_script_gpu.slurm`) | yes |
-| `tasks/` | `todo.md`: plans, decisions, results | yes |
-| `data/` | input data (untrusted; one new folder per source) | no |
+| `hpc/` | SLURM scripts and submission helpers | yes |
+| `data/` | input data | no |
 | `output/`, `runs/`, `logs/` | results, trained networks, job logs | no |
 
-## Rules
+## Notes
 
-- Every Python run goes through `sbatch hpc/run_script_cpu.slurm` or `hpc/run_script_gpu.slurm`; nothing is run on the
-  login node. Python environment: the existing `pinn_torch` one (absolute path in the SLURM scripts).
-- Code taken from `../pinn/zb_inverse` is copied here with its origin noted in the file header; that project (paused)
-  and `../wtd_pipeline` (read only) are not modified from here.
-- Plots: line plots only, no titles or annotations; axis labels with units; a legend only for two or more lines.
-- Lessons from mistakes go to `/storage/project/r-rbras6-0/jjason3/tasks/lessons.md`.
+- Every Python run goes through `sbatch hpc/run_script_cpu.slurm` or `hpc/run_script_gpu.slurm`.
+- The finite-element solver is loaded read-only from a separate `wtd_pipeline` checkout (path in the synthetic
+  configs); code copied from an earlier project is marked with its origin in the file header.
+- Plots: line plots only, axis labels with units, a legend only for two or more lines.
