@@ -42,7 +42,7 @@ def main():
     ax[0].legend(frameon=False, fontsize=9)
 
     ax[1].plot([float(r['wall_s']) / 60 for r in rows], [100 * float(r['zb_rmse_m']) for r in rows],
-               color='#eb6834', lw=1.6, label='PINN (V100 GPU)')
+               color='#eb6834', lw=1.6, label='PINN (1 GPU)')
     ax[1].plot([0.0] + [h['wall_s'] / 60 for h in fs['history']], [100 * start] + [100 * h['zb_rmse_m'] for h in
                fs['history']], color='#2a78d6', lw=1.6, marker='o', ms=4, label='FEM inversion (8 CPU cores)')
     ax[1].set_xlabel('wall-clock time (min)')
