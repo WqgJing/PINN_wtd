@@ -134,6 +134,13 @@ def build(cfg, dev):
         ws, we = float(wc['start_day']), float(wc['end_day'])
         ramp = np.clip((t_rec - ws) / (we - ws), 0.0, 1.0)
         th_obs_rec = th_obs_rec + ramp[:, None] * np.asarray(drift, dtype=float)[None, :]
+    shift = sc.get('shift_hours')                                    # optional clock error per chosen sensor (test #3):
+    if shift is not None:                                            # reading(t) = true reading(t - s), s in hours
+        if len(shift) != len(cols):
+            raise ValueError(f'sensors.shift_hours has {len(shift)} values for {len(cols)} sensors')
+        for j, sh in enumerate(shift):
+            if float(sh) != 0.0:
+                th_obs_rec[:, j] = np.interp(t_rec - float(sh) / 24.0, t_rec, th_obs_rec[:, j])
     # optional gaps: [[sensor index, first day, last day], ...] in record days; missing readings are left out of the
     # data loss. Inputs that need a full series (memory features, start path) get a straight-line fill instead.
     avail_rec = np.ones(th_obs_rec.shape, dtype=bool)
@@ -146,6 +153,19 @@ def build(cfg, dev):
     if sc.get('qc'):                                                # standard cleanup, the same for every method
         theta_s_given = float(rec['soil'][0]) * float((cfg.get('soil_factor') or {}).get('theta_s', 1.0))
         avail_rec, qc_info = quality_control(th_obs_rec, avail_rec, theta_s_given, tol=float(sc.get('qc_tol', 0.015)))
+    smp = sc.get('sampling')                                         # optional sparse sampling of every sensor (#4)
+    if smp:
+        day = np.floor(t_rec + 1e-9)
+        hour = np.round((t_rec - day) * 24.0)
+        keep = (np.abs(hour - float(smp.get('hour', 12))) < 1e-6) & (day.astype(int) % int(smp.get('every_days', 1)) == 0)
+        if smp.get('mode', 'snapshot') == 'daily_mean':             # the day's mean of the hourly readings, at the hour
+            for i in np.where(keep)[0]:
+                same = day == day[i]
+                for j in range(th_obs_rec.shape[1]):
+                    ok_j = same & avail_rec[:, j]
+                    if ok_j.any():
+                        th_obs_rec[i, j] = th_obs_rec[ok_j, j].mean()
+        avail_rec = avail_rec & keep[:, None]
     th_fill_rec = th_obs_rec.copy()
     for j in range(th_obs_rec.shape[1]):
         if not avail_rec[:, j].all():
