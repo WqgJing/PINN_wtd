@@ -193,6 +193,9 @@ def build(cfg, dev):
         coef0 = ZbSplineNumpy.fit(sp, tw, np.maximum(zb_hyd, d_deep + 0.02), zb_min).coef
     elif init.startswith('constant:'):
         coef0 = ZbSplineNumpy.fit(sp, tw, np.full_like(tw, float(init.split(':')[1])), zb_min).coef
+    elif init.startswith('hydrostatic+'):                           # the at-rest reading shifted down by a fixed amount
+        shift_m = float(init.split('+', 1)[1])                       # (two-start check of identifiability)
+        coef0 = ZbSplineNumpy.fit(sp, tw, np.maximum(zb_hyd, d_deep + 0.02) + shift_m, zb_min).coef
     else:
         raise ValueError(f'init {init}')
     sink = RootSink(rec['t_nodes'], rec['tp_nodes_mmd']) if cfg['physics'].get('root_sink', True) else None
