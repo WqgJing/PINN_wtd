@@ -20,14 +20,14 @@ SP = CubicBSpline1D(0.0, 20.0, 1.0)
 D_TOP = 0.05
 
 
-def make(path_m, randomise=False):
+def make(path_m, randomise=False, head_form='shift'):
     """path_m: water-table depth [m] at the knots' fit points (constant or array over 0..20 d)."""
     t = np.linspace(0, 20, 481)
     if np.ndim(path_m) == 0:      # exactly constant (a least-squares fit is constant only to ~1e-8)
         coef = np.full(SP.n_coef, np.log(np.expm1(float(path_m) - 0.05)))
     else:
         coef = ZbSplineNumpy.fit(SP, t, np.interp(t, np.linspace(0, 20, len(path_m)), path_m), 0.05).coef
-    m = ProfilePINN(SOIL, SP, coef, 0.05, D_TOP, 20.0, 35.0, width=16, depth=2)
+    m = ProfilePINN(SOIL, SP, coef, 0.05, D_TOP, 20.0, 35.0, width=16, depth=2, head_form=head_form)
     if randomise:
         torch.nn.init.normal_(m.N.net[-1].weight, std=0.05)
         torch.nn.init.normal_(m.N.net[-1].bias, std=0.05)
@@ -91,6 +91,36 @@ def test_path_gradient():
     loss = (m.theta_at(0.6, t) ** 2).sum()
     loss.backward()
     assert float(m.coef.grad.abs().sum()) > 0.0, 'the data must reach the path coefficients'
+
+
+def test_scale_form_matches_at_rest():
+    """head_form scale: h = 0 at the water table, hydrostatic at N = 0, no residual at rest."""
+    m = make([0.9, 1.1, 0.8, 1.2], randomise=True, head_form='scale')
+    t = 20 * torch.rand(200, 1)
+    assert float(m.h_tilde(-torch.ones_like(t), t).abs().max()) == 0.0, 'scale: h must vanish at xi = -1'
+    m = make([0.9, 1.1, 0.8, 1.2], head_form='scale')
+    for d in (0.05, 0.2, 0.4, 0.6):
+        ref = SOIL.theta(-(m.zb(t) - d) / SOIL.L)
+        assert float((m.theta_at(d, t) - ref).abs().max()) < 1e-12, f'scale: hydrostatic theta at {d} m'
+    m = make(1.0, head_form='scale')
+    xi, tt = -torch.rand(500, 1), 20 * torch.rand(500, 1)
+    assert float(pde_residual(m, xi, tt).abs().max()) < 1e-10, 'scale: rest residual'
+
+
+def test_scale_form_stays_unsaturated():
+    """Large network outputs: the shift form can make h > 0 above the water table (saturated, theta flat, no gradient);
+    the scale form keeps h < 0 there and the sensor still responds to the water table."""
+    for form, expect_pos in (('shift', True), ('scale', False)):
+        m = make(3.0, head_form=form)
+        torch.nn.init.constant_(m.N.net[-1].bias, 3.0)   # far from the hydrostatic profile, towards wet
+        xi, t = -0.05 - 0.9 * torch.rand(300, 1), 20 * torch.rand(300, 1)
+        pos = bool((m.h_tilde(xi, t) > 0).any())
+        assert pos == expect_pos, f'{form}: h > 0 above the water table is {pos}'
+    m = make(3.0, head_form='scale')
+    torch.nn.init.constant_(m.N.net[-1].bias, -3.0)      # very wet but unsaturated
+    t = 20 * torch.rand(50, 1)
+    m.theta_at(0.6, t).sum().backward()
+    assert float(m.coef.grad.abs().sum()) > 0.0, 'scale: the sensor must still reach the path coefficients'
 
 
 if __name__ == '__main__':

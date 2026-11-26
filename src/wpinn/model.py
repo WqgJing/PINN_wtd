@@ -3,7 +3,9 @@
 Coordinates: z' = z + d_top (z up, surface at z = 0), so the column is -H(t) <= z' <= 0 with H(t) = zb(t) - d_top,
 and xi = z' / H in [-1, 0]: xi = 0 at the top sensor, xi = -1 at the water table.
 
-    h~(xi, t) = (1 + xi) * [ -H(t)/L + N(xi, t, features) ]      (h~ = h / L)
+    h~(xi, t) = (1 + xi) * [ -H(t)/L + N(xi, t, features) ]      (h~ = h / L; head_form "shift", default)
+    h~(xi, t) = -(1 + xi) * H(t)/L * exp(N(xi, t, features))       (head_form "scale": h < 0 above the water table,
+                                                                    so the column cannot saturate and lose its gradient)
 
 - h = 0 at the water table for any weights and any path (factor 1 + xi).
 - N = 0 is the hydrostatic (no-flow) profile of the current water table; N is the departure from it.
@@ -45,8 +47,11 @@ class MLP(nn.Module):
 class ProfilePINN(nn.Module):
     def __init__(self, soil, spline, coef_init, zb_min, d_top, t_window_days, t_offset_days, sink=None, memories=None,
                  width=128, depth=6, fourier_periods_days=(1.0, 2.0, 4.0, 8.0, 16.0, 32.0),
-                 path_taus_days=(0.25, 1.0, 4.0, 16.0)):
+                 path_taus_days=(0.25, 1.0, 4.0, 16.0), head_form='shift'):
         super().__init__()
+        if head_form not in ('shift', 'scale'):
+            raise ValueError(f'head_form {head_form}')
+        self.head_form = head_form
         self.soil, self.spline = soil, spline
         self.zb_min, self.d_top = float(zb_min), float(d_top)
         self.Tw, self.t_off = float(t_window_days), float(t_offset_days)
@@ -81,6 +86,8 @@ class ProfilePINN(nn.Module):
         return torch.cat(f, dim=1)
 
     def h_tilde(self, xi, t):
+        if self.head_form == 'scale':                       # hydrostatic profile scaled by exp(N): h < 0 above
+            return -(1.0 + xi) * self.H_tilde(t) * torch.exp(self.N(self.features(xi, t)))   # the water table
         return (1.0 + xi) * (-self.H_tilde(t) + self.N(self.features(xi, t)))
 
     def xi_of_depth(self, depth_m, t):

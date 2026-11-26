@@ -207,7 +207,8 @@ def build(cfg, dev):
     model = ProfilePINN(soil, sp, coef0, zb_min, d_top, t1 - t0, t0, sink=sink, memories=mem,
                         width=int(cfg['net']['width']), depth=int(cfg['net']['depth']),
                         fourier_periods_days=cfg['net']['fourier_periods_days'],
-                        path_taus_days=cfg['net']['path_taus_days']).to(dev)
+                        path_taus_days=cfg['net']['path_taus_days'],
+                        head_form=str(cfg['net'].get('head_form', 'shift'))).to(dev)
     sig_th = float(cfg['sigmas']['theta'])
     avail = avail_rec[k]                                             # (n_t, n_sensors) in the window
     rates = [signal_rate_scale(tw[avail[:, j]], th_obs_rec[k, j][avail[:, j]], soil, sig_th)
@@ -332,6 +333,12 @@ def main():
         groups.append({'params': [m.coef], 'lr': lr * float(tc['coef_lr_factor'])})
     opt = torch.optim.Adam(groups)
     warm = int(tc.get('warmup_steps', 0)) if mode == 'invert' else steps
+    # Adam moves a coefficient by about its learning rate per step, so the rate schedule caps how far the water table
+    # can travel from its start; coef_hold_frac keeps the coefficients' starting rate for that share of the steps
+    # before the decay (0 = the original schedule).
+    coef_hold = float(tc.get('coef_hold_frac', 0.0))
+    if not 0.0 <= coef_hold < 1.0:
+        raise ValueError(f'coef_hold_frac {coef_hold}')
     m.coef.requires_grad_(False)
     log_path = os.path.join(args.out, 'log.csv')
     fields = ['step', 'wall_s', 'data', 'pde', 'wb', 'val_data', 'val_pde', 'val_wb', 'zb_rmse_m', 'zb_bias_m']
@@ -345,8 +352,11 @@ def main():
                 print(f"[train] step {step}: water-table coefficients released", flush=True)
             frac = step / max(steps, 1)
             for g_i, g in enumerate(opt.param_groups):
-                base = lr * (1.0 if g_i == 0 else float(tc['coef_lr_factor']))
-                g['lr'] = base * (lr_end / lr) ** frac
+                if g_i == 0:
+                    g['lr'] = lr * (lr_end / lr) ** frac
+                else:                                                # coefficients: held, then the same decay
+                    frac_c = max(frac - coef_hold, 0.0) / (1.0 - coef_hold)
+                    g['lr'] = lr * float(tc['coef_lr_factor']) * (lr_end / lr) ** frac_c
             lo = losses(B, cfg, gen, dev)
             total = sum(lo.values())
             opt.zero_grad(set_to_none=True)
