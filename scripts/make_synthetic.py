@@ -131,8 +131,18 @@ def main():
         print(f"[syn] {k}: {v}", flush=True)
 
     offset = float(wc.get('offset_m', 0.0))                 # the record lowered by a constant, shape unchanged
+    rec = s['zb_record'] + offset
+    mw = wc.get('map_window')                               # optional: the record mapped linearly (timing and shape
+    if mw:                                                  # kept, swings scaled) to span range_m within days
+        d0, d1 = (float(v) for v in mw['days'])
+        lo, hi = (float(v) for v in mw['range_m'])
+        in_w = (t_h >= d0) & (t_h <= d1)
+        r0, r1 = float(rec[in_w].min()), float(rec[in_w].max())
+        rec = lo + (hi - lo) * (rec - r0) / (r1 - r0)
+        print(f"[syn] water-table record mapped from {r0:.3f} .. {r1:.3f} m to {lo:.3f} .. {hi:.3f} m within days "
+              f"{d0:g} - {d1:g} (swings x {(hi - lo) / (r1 - r0):.2f})", flush=True)
     sp = CubicBSpline1D(0.0, n_days, wc['knot_days'])
-    path = ZbSplineNumpy.fit(sp, t_h, s['zb_record'] + offset, wc['zb_min'])
+    path = ZbSplineNumpy.fit(sp, t_h, rec, wc['zb_min'])
     zb = path.zb(t_h)
     if offset:
         print(f"[syn] water-table record lowered by {offset:.3f} m", flush=True)
