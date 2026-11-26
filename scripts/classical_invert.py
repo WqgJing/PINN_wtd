@@ -54,6 +54,10 @@ def main():
     ap.add_argument('--est_top', action='store_true', help='fit a constant offset and a linear drift of the top '
                                                            'sensor with the water table (two extra unknowns)')
     ap.add_argument('--delta_top', type=float, default=0.002, help='central-difference step of those two, m3/m3')
+    ap.add_argument('--max_step', type=float, default=None, help='trust region: largest change of any spline '
+                    'coefficient per iteration (the step is scaled down to it); default no limit')
+    ap.add_argument('--damp_floor', type=float, default=0.0, help='floor of the Marquardt scaling diag(J\'J) as a '
+                    'fraction of its mean, so that coefficients the sensors barely see are still damped; 0 = plain')
     args = ap.parse_args()
     tic0 = time.time()
     os.makedirs(args.out, exist_ok=True)
@@ -183,9 +187,15 @@ def main():
         J = (np.where(np.isfinite(dif), dif, 0.0).T / (2 * deltas[None, :]) / sig)[ok]
         r = ((th - y) / sig)[ok]
         A, g = J.T @ J, J.T @ r
+        D = np.diag(A).copy()                                   # Marquardt scaling
+        if args.damp_floor > 0:                                 # floored: no undamped direction
+            D = np.maximum(D, args.damp_floor * D.mean())
         accepted, rel = False, 0.0
         for _ in range(10):
-            step = -np.linalg.solve(A + lam * np.diag(np.diag(A)) + 1e-12 * np.eye(n_c), g)
+            step = -np.linalg.solve(A + lam * np.diag(D) + 1e-12 * np.eye(n_c), g)
+            s_max = float(np.abs(step[:sp.n_coef]).max())
+            if args.max_step is not None and s_max > args.max_step:   # trust region on the coefficients
+                step = step * (args.max_step / s_max)
             th_new = fwd(c + step)[0]
             cost_new = cost_of(th_new)
             if np.isfinite(cost_new) and cost_new < cost:
@@ -209,7 +219,8 @@ def main():
     th_deep = th.reshape(len(deep), tw.size).T
     summary = {
         'top': args.top, 'smooth_hours': args.smooth_hours if args.top == 'smooth' else None,
-        'dt_hours': args.dt_hours, 'rel_tol': args.rel_tol, 'depths_m': depths, 'iterations': len(hist),
+        'dt_hours': args.dt_hours, 'rel_tol': args.rel_tol, 'max_step': args.max_step, 'damp_floor': args.damp_floor,
+        'depths_m': depths, 'iterations': len(hist),
         'solves': info['solves'],
         'batched_solves': info['batched_solves'], 'not_converged_max': info['not_converged_max'],
         'wall_fit_s': wall_fit, 'solve_s': info['solve_s'], 'wall_total_s': time.time() - tic0, 'cost': cost,
