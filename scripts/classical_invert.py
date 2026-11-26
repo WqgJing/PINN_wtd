@@ -47,17 +47,18 @@ def main():
     ap.add_argument('--tol', type=float, default=1e-7)
     ap.add_argument('--max_iter_picard', type=int, default=100)
     ap.add_argument('--delta', type=float, default=0.01, help='central-difference step, spline-coefficient units')
-    ap.add_argument('--max_iter', type=int, default=30)
+    ap.add_argument('--max_iter', type=int, default=60)
     ap.add_argument('--rel_tol', type=float, default=1e-7, help='stop when a step lowers the cost by less than this '
                                                                 'fraction')
     ap.add_argument('--zc_min', type=float, default=0.05, help='least column length below the top sensor, m')
     ap.add_argument('--est_top', action='store_true', help='fit a constant offset and a linear drift of the top '
                                                            'sensor with the water table (two extra unknowns)')
     ap.add_argument('--delta_top', type=float, default=0.002, help='central-difference step of those two, m3/m3')
-    ap.add_argument('--max_step', type=float, default=None, help='trust region: largest change of any spline '
-                    'coefficient per iteration (the step is scaled down to it); default no limit')
-    ap.add_argument('--damp_floor', type=float, default=0.0, help='floor of the Marquardt scaling diag(J\'J) as a '
-                    'fraction of its mean, so that coefficients the sensors barely see are still damped; 0 = plain')
+    ap.add_argument('--max_step', type=float, default=1.0, help='trust region: largest change of any spline '
+                    'coefficient per iteration (the step is scaled down to it); <= 0: no limit (original)')
+    ap.add_argument('--damp_floor', type=float, default=1e-3, help='floor of the Marquardt scaling diag(J\'J) as a '
+                    'fraction of its mean, so that coefficients the sensors barely see are still damped; '
+                    '0 = plain (original)')
     args = ap.parse_args()
     tic0 = time.time()
     os.makedirs(args.out, exist_ok=True)
@@ -194,7 +195,7 @@ def main():
         for _ in range(10):
             step = -np.linalg.solve(A + lam * np.diag(D) + 1e-12 * np.eye(n_c), g)
             s_max = float(np.abs(step[:sp.n_coef]).max())
-            if args.max_step is not None and s_max > args.max_step:   # trust region on the coefficients
+            if args.max_step > 0 and s_max > args.max_step:            # trust region on the coefficients
                 step = step * (args.max_step / s_max)
             th_new = fwd(c + step)[0]
             cost_new = cost_of(th_new)

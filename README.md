@@ -14,6 +14,18 @@ Two inversions of the same problem are included:
   boundary and a hydrostatic start; the same spline coefficients are fitted by Levenberg-Marquardt to the deeper
   sensors. Optionally the top sensor's offset and drift are fitted as two extra unknowns (`--est_top`).
 
+Default settings make both inversions work from a starting water table well away from the answer (tested from
+starts up to 3 m with the water table at 0.7 - 1.1 m):
+
+- PINN (`configs/wt4_d35_55.yaml`): `net.head_form: scale` writes the pressure as the hydrostatic profile scaled by
+  exp(N), so it stays negative above the water table and the column cannot saturate (a saturated column has no
+  gradient and stalls training); `train.coef_lr_factor: 1.0` and `train.coef_hold_frac: 0.5` let the water table
+  travel several metres during training. The original form is `head_form: shift`, `coef_lr_factor: 0.1`,
+  `coef_hold_frac: 0`.
+- FEM inversion (`scripts/classical_invert.py`): `--max_step 1.0` caps the change of any spline coefficient per
+  iteration and `--damp_floor 1e-3` damps coefficients the sensors barely see, so the fit cannot jump to a far
+  water table; `--max_step 0 --damp_floor 0 --max_iter 30` is the original fit.
+
 Synthetic truth records are made with the finite-element solver (`scripts/make_synthetic.py`), optionally with a
 different root distribution or with soil varying with depth (`src/wpinn/fem_hetero.py`). Sensor errors (offsets,
 drift, gain, noise, spikes, gaps, clock shifts, sparse sampling) and a standard quality control are options of the

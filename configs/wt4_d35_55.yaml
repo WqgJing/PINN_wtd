@@ -22,17 +22,19 @@ net:
   fourier_periods_days: [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
   path_taus_days: [0.25, 1.0, 4.0, 16.0]
   memory_taus_days: [0.0416667, 0.25, 1.0, 4.0]   # memories of the top sensor's record and of the transpiration
+  head_form: scale                   # h = -(1+xi) H exp(N): unsaturated above the water table (shift: original form)
 sigmas:
   theta: 0.005                       # = the noise
   pde_factor: 1.0                    # sigma_pde = RMS day-mean rate of change of the sensors (signal_rate_scale)
 mode: invert                         # invert | fixed (path held at the truth: sanity run)
-init: hydrostatic                    # hydrostatic (deepest sensor) | truth | constant:<m>
+init: hydrostatic                    # hydrostatic (deepest sensor) | hydrostatic+<m> | truth | constant:<m>
 train:
   seed: 0
   steps: 30000
   lr: 1.0e-3
   lr_final: 2.0e-5
-  coef_lr_factor: 0.1                # learning rate of the path coefficients relative to the network's
+  coef_lr_factor: 1.0                # learning rate of the path coefficients relative to the network's (original 0.1)
+  coef_hold_frac: 0.5                # path rate held for this share of the steps, then decayed (original 0)
   warmup_steps: 3000                 # path held at its start for these steps
   n_col: 8192
   n_box: 128
