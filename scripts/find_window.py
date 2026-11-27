@@ -17,6 +17,7 @@ def main():
     ap.add_argument('--csv', required=True)
     ap.add_argument('--swc', required=True, help='comma-separated soil-moisture columns that must be complete')
     ap.add_argument('--wtd', default='WTD_1_1_1')
+    ap.add_argument('--le', default='LE', help='latent-heat column (default: LE or its first alias)')
     ap.add_argument('--days', type=int, default=21)
     ap.add_argument('--min_valid', type=float, default=0.95)
     ap.add_argument('--min_le', type=float, default=0.7)
@@ -25,7 +26,8 @@ def main():
     args = ap.parse_args()
     swc = args.swc.split(',')
     rain = 'P_RAIN'
-    t, v = psa.read(args.csv, swc + [args.wtd, 'LE', rain])
+    t, v = psa.read(args.csv, swc + [args.wtd, args.le, rain])
+    v['LE'] = v[args.le]
     for c in swc:
         v[c] = np.where((v[c] > 0.0) & (v[c] <= 100.0), v[c], np.nan)
     day = t.astype('datetime64[D]')

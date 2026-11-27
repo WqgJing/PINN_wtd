@@ -82,6 +82,7 @@ def main():
     ap.add_argument('--start', default=None)
     ap.add_argument('--end', default=None)
     ap.add_argument('--max_depth_m', type=float, default=None, help='plot only sensors at most this deep')
+    ap.add_argument('--le', default='LE', help='latent-heat column (default: LE or its first alias)')
     ap.add_argument('--halfhourly', action='store_true', help='rain and ET as half-hourly rates (mm/h), not daily')
     args = ap.parse_args()
     hts = heights(args.heights, args.site)
@@ -94,7 +95,8 @@ def main():
         swc = [c for c in swc if -hts.get(c, 0.0) <= args.max_depth_m + 1e-9]
     rain = 'P_RAIN'
     wtd = [c for c in head if re.fullmatch(r'WTD(_\d+_\d+_\d+)?', c)]
-    t, v = read(args.csv, swc + [rain, 'LE'] + wtd)
+    t, v = read(args.csv, swc + [rain, args.le] + wtd)
+    v['LE'] = v[args.le]
     for c in swc:                                            # SWC in %: other flags (e.g. 9999999) and zeros dropped
         v[c] = np.where((v[c] > 0.0) & (v[c] <= 100.0), v[c], np.nan)
     t0 = np.datetime64(args.start) if args.start else t[0]
