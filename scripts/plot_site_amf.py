@@ -74,6 +74,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--start', default=None)
     ap.add_argument('--end', default=None)
+    ap.add_argument('--max_depth_m', type=float, default=None, help='plot only sensors at most this deep')
     ap.add_argument('--halfhourly', action='store_true', help='rain and ET as half-hourly rates (mm/h), not daily')
     args = ap.parse_args()
     hts = heights(args.heights, args.site)
@@ -82,6 +83,8 @@ def main():
         next(rd), next(rd)
         head = next(rd)
     swc = sorted([c for c in head if re.fullmatch(rf'SWC_{args.profile}_\d+_1', c)], key=lambda c: -hts.get(c, 0.0))
+    if args.max_depth_m is not None:
+        swc = [c for c in swc if -hts.get(c, 0.0) <= args.max_depth_m + 1e-9]
     rain = 'P_RAIN' if 'P_RAIN' in head else 'P'
     wtd = [c for c in head if re.fullmatch(r'WTD(_\d+_\d+_\d+)?', c)]
     t, v = read(args.csv, swc + [rain, 'LE'] + wtd)
