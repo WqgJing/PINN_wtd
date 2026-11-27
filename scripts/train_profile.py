@@ -316,6 +316,20 @@ def main():
     B = build(cfg, dev)
     m = B['model']
     mode = str(cfg['mode'])
+    # optional: Ks estimated with the water table (point estimate). The soil conductivity is multiplied by
+    # exp(log_ks); Ks_ref = the config's Ks (record Ks x soil_factor.Ks) is the start. Optional prior sd on log Ks
+    # (ks.prior_sd) as a penalty consistent with the mean-normalised losses.
+    ks_cfg = cfg.get('ks') or {}
+    log_ks = None
+    if ks_cfg.get('estimate') and mode == 'invert':
+        from wpinn.vi import VarKsSoil
+        s_ = B['soil_params']
+        vsoil = VarKsSoil(theta_s=s_[0], theta_r=s_[1], alpha=s_[2], n=s_[3], Ks=s_[4], L=float(cfg['scaling']['L']))
+        m.soil, B['soil'] = vsoil, vsoil
+        log_ks = torch.nn.Parameter(torch.zeros((), dtype=torch.float64, device=dev))
+        ks_ref = float(s_[4])
+        ks_true = float(np.load(cfg['data']['npz'])['soil'][4])          # scoring only
+        n_half = 0.5 * float(B['obs']['theta'].shape[0])
     print(f"[train] device {dev}; mode {mode}; init {cfg['init']}; sensors {B['depths']} m; window "
           f"{cfg['window']['start_day']} - {cfg['window']['end_day']} d; {B['spline'].n_coef} path coefficients; "
           f"sigma_theta {B['sig_th']}, sigma_pde {B['sig_pde']:.4g} (per sensor {[round(r, 4) for r in B['rates']]}); "
@@ -330,7 +344,8 @@ def main():
     lr, lr_end, steps = float(tc['lr']), float(tc['lr_final']), int(tc['steps'])
     groups = [{'params': net_params, 'lr': lr}]
     if mode == 'invert':
-        groups.append({'params': [m.coef], 'lr': lr * float(tc['coef_lr_factor'])})
+        groups.append({'params': [m.coef] + ([log_ks] if log_ks is not None else []),
+                       'lr': lr * float(tc['coef_lr_factor'])})
     opt = torch.optim.Adam(groups)
     warm = int(tc.get('warmup_steps', 0)) if mode == 'invert' else steps
     # Adam moves a coefficient by about its learning rate per step, so the rate schedule caps how far the water table
@@ -340,6 +355,8 @@ def main():
     if not 0.0 <= coef_hold < 1.0:
         raise ValueError(f'coef_hold_frac {coef_hold}')
     m.coef.requires_grad_(False)
+    if log_ks is not None:
+        log_ks.requires_grad_(False)
     log_path = os.path.join(args.out, 'log.csv')
     fields = ['step', 'wall_s', 'data', 'pde', 'wb', 'val_data', 'val_pde', 'val_wb', 'zb_rmse_m', 'zb_bias_m']
     tic = time.time()
@@ -349,6 +366,8 @@ def main():
         for step in range(steps + 1):
             if mode == 'invert' and step == warm:
                 m.coef.requires_grad_(True)
+                if log_ks is not None:
+                    log_ks.requires_grad_(True)
                 print(f"[train] step {step}: water-table coefficients released", flush=True)
             frac = step / max(steps, 1)
             for g_i, g in enumerate(opt.param_groups):
@@ -357,8 +376,12 @@ def main():
                 else:                                                # coefficients: held, then the same decay
                     frac_c = max(frac - coef_hold, 0.0) / (1.0 - coef_hold)
                     g['lr'] = lr * float(tc['coef_lr_factor']) * (lr_end / lr) ** frac_c
+            if log_ks is not None:
+                m.soil.k_factor = torch.exp(log_ks)
             lo = losses(B, cfg, gen, dev)
             total = sum(lo.values())
+            if log_ks is not None and ks_cfg.get('prior_sd'):
+                total = total + 0.5 * (log_ks / float(ks_cfg['prior_sd'])) ** 2 / n_half
             opt.zero_grad(set_to_none=True)
             total.backward()
             opt.step()
@@ -373,7 +396,10 @@ def main():
                 flog.flush()
                 print(f"[train] {step:6d} {row['wall_s']:7.0f}s data {row['data']:.3f} pde {row['pde']:.3f} wb "
                       f"{row['wb']:.3f} | val data {row['val_data']:.3f} pde {row['val_pde']:.3f} wb {row['val_wb']:.3f}"
-                      f" | zb vs truth {100 * sc_['rmse_m']:.2f} cm (bias {100 * sc_['bias_m']:+.2f})", flush=True)
+                      f" | zb vs truth {100 * sc_['rmse_m']:.2f} cm (bias {100 * sc_['bias_m']:+.2f})"
+                      + (f" | Ks {ks_ref * float(torch.exp(log_ks)):.3e} (truth {ks_true:.3e})"
+                         if log_ks is not None else ''),
+                      flush=True)
 
     zb, th, val = evaluate(B, cfg, dev, gen_val)
     tw = B['tw']
@@ -389,6 +415,9 @@ def main():
                                      for j in range(len(B['depths']))],
                'theta_vs_truth_rmse': [float(np.sqrt(np.mean((th[:, j] - B['th_true'][:, j]) ** 2)))
                                        for j in range(len(B['depths']))]}
+    if log_ks is not None:
+        summary['ks'] = {'ref_start': ks_ref, 'estimate': ks_ref * float(torch.exp(log_ks)), 'truth': ks_true,
+                         'ratio_to_truth': ks_ref * float(torch.exp(log_ks)) / ks_true}
     with open(os.path.join(args.out, 'summary.json'), 'w') as f:
         json.dump(summary, f, indent=2)
     np.savez(os.path.join(args.out, 'predictions.npz'), t_days=tw, t_offset=float(cfg['window']['start_day']),
