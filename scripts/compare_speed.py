@@ -123,14 +123,16 @@ def main():
     ap.add_argument('--out', required=True, help='output path without extension')
     ap.add_argument('--tol_m', type=float, default=0.05)
     ap.add_argument('--cap_min', type=float, default=1000.0, help='where failures are drawn, minutes')
+    ap.add_argument('--pinn_prefix', default='s', help='PINN run folders runs/<prefix><n>_<set>_<start>')
+    ap.add_argument('--fem_prefix', default='fs', help='FEM run folders runs/<prefix><n>_<set>_<start>')
     args = ap.parse_args()
     cases = []
     for n, sets in SETS.items():
         for st in sets:
             for s0 in STARTS:
                 cases.append({'sensors': n, 'set': st, 'start': s0,
-                              'pinn': pinn_case(f's{n}_{st}_{s0}', args.tol_m),
-                              'fem': fem_case(f'fs{n}_{st}_{s0}', args.tol_m)})
+                              'pinn': pinn_case(f'{args.pinn_prefix}{n}_{st}_{s0}', args.tol_m),
+                              'fem': fem_case(f'{args.fem_prefix}{n}_{st}_{s0}', args.tol_m)})
     report = {'cases': cases, 'verdict_by_sensor_count': {}}
     for n in SETS:
         sub = [c for c in cases if c['sensors'] == n and c['pinn']['finished'] and c['fem']['finished']]
