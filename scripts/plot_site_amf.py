@@ -83,6 +83,7 @@ def main():
     ap.add_argument('--end', default=None)
     ap.add_argument('--max_depth_m', type=float, default=None, help='plot only sensors at most this deep')
     ap.add_argument('--le', default='LE', help='latent-heat column (default: LE or its first alias)')
+    ap.add_argument('--ts', default=None, help='soil-temperature column: adds a panel (0 C marks frost)')
     ap.add_argument('--halfhourly', action='store_true', help='rain and ET as half-hourly rates (mm/h), not daily')
     args = ap.parse_args()
     hts = heights(args.heights, args.site)
@@ -95,13 +96,15 @@ def main():
         swc = [c for c in swc if -hts.get(c, 0.0) <= args.max_depth_m + 1e-9]
     rain = 'P_RAIN'
     wtd = [c for c in head if re.fullmatch(r'WTD(_\d+_\d+_\d+)?', c)]
-    t, v = read(args.csv, swc + [rain, args.le] + wtd)
+    t, v = read(args.csv, swc + [rain, args.le] + wtd + ([args.ts] if args.ts else []))
     v['LE'] = v[args.le]
     for c in swc:                                            # SWC in %: other flags (e.g. 9999999) and zeros dropped
         v[c] = np.where((v[c] > 0.0) & (v[c] <= 100.0), v[c], np.nan)
     t0 = np.datetime64(args.start) if args.start else t[0]
     t1 = np.datetime64(args.end) if args.end else t[-1]
-    fig, axes = plt.subplots(3, 1, figsize=(13, 11), sharex=True, gridspec_kw={'height_ratios': [1, 1.6, 1.2]})
+    nrow = 4 if args.ts else 3
+    fig, axes = plt.subplots(nrow, 1, figsize=(13, 11 + 2.5 * (nrow - 3)), sharex=True,
+                             gridspec_kw={'height_ratios': [1, 1.6, 1.2] + [0.8] * (nrow - 3)})
     if args.halfhourly:
         m = (t >= t0) & (t <= t1)
         axes[0].plot(t[m], 2.0 * v[rain][m], color='#2a78d6', lw=1.0, label='rain')
@@ -130,8 +133,16 @@ def main():
     axes[2].invert_yaxis()
     axes[2].set_ylabel('water-table depth (m)')
     axes[2].legend(frameon=False, fontsize=9)
-    axes[2].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d' if args.halfhourly else '%Y-%m'))
-    axes[2].set_xlabel('date')
+    if args.ts:
+        x = v[args.ts][m]
+        axes[3].plot(t[m], x, color='#8a4fd1', lw=1.0, label=args.ts)
+        axes[3].axhline(0.0, color='k', lw=0.8, label='0 C')
+        axes[3].set_ylabel('soil temperature (C)')
+        axes[3].legend(frameon=False, fontsize=9)
+        print(f"[site] {args.ts}: {np.nanmin(x):.1f} .. {np.nanmax(x):.1f} C, <= 0 C on {100 * np.nanmean(x <= 0.0):.0f} % "
+              f"of valid half-hours, valid {100 * np.isfinite(x).mean():.0f} %", flush=True)
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d' if args.halfhourly else '%Y-%m'))
+    axes[-1].set_xlabel('date')
     for ax in axes:
         ax.grid(True, color='#e1e0d9', lw=0.6)
         ax.spines[['top', 'right']].set_visible(False)
