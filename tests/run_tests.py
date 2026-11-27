@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Unit tests of the model and the residuals (plain asserts; run through hpc/run_script_cpu.slurm)."""
+import math
 import os
 import sys
 import numpy as np
@@ -11,6 +12,7 @@ from wpinn.model import ProfilePINN                    # noqa: E402
 from wpinn.physics import pde_residual, block_defect   # noqa: E402
 from wpinn.soil import SoilVG                          # noqa: E402
 from wpinn.spline import CubicBSpline1D, ZbSplineNumpy  # noqa: E402
+from wpinn.vi import VarKsSoil, VIProfilePINN, GaussianPosterior, WaterTableKsPrior   # noqa: E402
 
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(0)
@@ -121,6 +123,92 @@ def test_scale_form_stays_unsaturated():
     t = 20 * torch.rand(50, 1)
     m.theta_at(0.6, t).sum().backward()
     assert float(m.coef.grad.abs().sum()) > 0.0, 'scale: the sensor must still reach the path coefficients'
+
+
+VSOIL = VarKsSoil(theta_s=0.4193514611932402, theta_r=5.66e-09, alpha=0.822311364445854, n=2.7469217167092075,
+                  Ks=1.922838127196462e-06, L=2.0)
+
+
+def make_vi(path_m, randomise=False):
+    t = np.linspace(0, 20, 481)
+    if np.ndim(path_m) == 0:
+        coef = np.full(SP.n_coef, np.log(np.expm1(float(path_m) - 0.05)))
+    else:
+        coef = ZbSplineNumpy.fit(SP, t, np.interp(t, np.linspace(0, 20, len(path_m)), path_m), 0.05).coef
+    m = VIProfilePINN(VSOIL, SP, coef, 0.05, D_TOP, 20.0, 35.0, width=16, depth=2, head_form='scale')
+    if randomise:
+        torch.nn.init.normal_(m.N.net[-1].weight, std=0.05)
+        torch.nn.init.normal_(m.N.net[-1].bias, std=0.05)
+    return m, torch.tensor(coef)
+
+
+def test_vi_gaussian_logq():
+    q = GaussianPosterior(np.arange(5.0), [0.3, 0.5, 1.0, 2.0, 0.1])
+    with torch.no_grad():
+        q.off.copy_(0.2 * torch.randn(5, 5))
+    u, lq = q.sample(50)
+    ref = torch.distributions.MultivariateNormal(q.mu, scale_tril=q.chol()).log_prob(u)
+    assert float((lq - ref).abs().max()) < 1e-10, 'log q of the Gaussian posterior'
+    pr = WaterTableKsPrior(4, 1.0, 2.0, 0.5, 1.0)
+    ref = torch.distributions.MultivariateNormal(pr.mean, precision_matrix=pr.P).log_prob(u[:, :5])
+    d = pr.log_prob(u[:, :5]) - ref
+    assert float((d - d[0]).abs().max()) < 1e-10, 'prior log p up to a constant'
+
+
+def test_vi_sample_drives_water_table_and_ks():
+    m, coef = make_vi([0.9, 1.1, 0.8, 1.2])
+    t = 20 * torch.rand(100, 1)
+    c2 = coef + 0.3
+    m.set_sample(c2, torch.tensor(math.log(3.0)))
+    zb = 0.05 + torch.nn.functional.softplus(SP.eval_torch(t, c2))
+    assert float((m.zb(t) - zb).abs().max()) < 1e-12, 'zb follows the sample'
+    for d in (0.05, 0.2, 0.4, 0.6):
+        ref = VSOIL.theta(-(zb - d) / VSOIL.L)
+        assert float((m.theta_at(d, t) - ref).abs().max()) < 1e-12, f'hydrostatic theta at {d} m for the sample'
+    h = -torch.rand(20, 1)
+    assert float((VSOIL.K(h) - 3.0 * SoilVG.K(VSOIL, h)).abs().max()) < 1e-14, 'K scaled by Ks / Ks_ref'
+
+
+def test_vi_rest_and_finite_differences():
+    m, coef = make_vi(1.0)
+    m.set_sample(coef, torch.tensor(0.7))
+    xi, tt = -torch.rand(300, 1), 20 * torch.rand(300, 1)
+    assert float(pde_residual(m, xi, tt).abs().max()) < 1e-10, 'rest residual with Ks changed'
+    m, coef = make_vi([0.9, 1.1, 0.8, 1.2], randomise=True)
+    m.set_sample(coef, torch.tensor(-0.9))
+    xi = -0.1 - 0.8 * torch.rand(20, 1)
+    t = 1.0 + 18 * torch.rand(20, 1)
+    R = pde_residual(m, xi, t).detach()
+    e_t, e_x, s = 1e-4, 1e-4, m.soil
+    with torch.no_grad():
+        Mf = lambda x, tt: s.storage(m.h_tilde(x, tt))
+        H = lambda tt: m.H_tilde(tt)
+        dM_dt = m.T_days * (Mf(xi, t + e_t) - Mf(xi, t - e_t)) / (2 * e_t)
+        Hdot = m.T_days * (H(t + e_t) - H(t - e_t)) / (2 * e_t)
+        dM_dxi = (Mf(xi + e_x, t) - Mf(xi - e_x, t)) / (2 * e_x)
+
+        def q(x):
+            dh = (m.h_tilde(x + e_x, t) - m.h_tilde(x - e_x, t)) / (2 * e_x)
+            return -s.K(m.h_tilde(x, t)) * (dh / H(t) + 1.0)
+        dq_dxi = (q(xi + e_x) - q(xi - e_x)) / (2 * e_x)
+        R_fd = dM_dt - (xi * Hdot / H(t)) * dM_dxi + dq_dxi / H(t)
+    err, scale = float((R - R_fd).abs().max()), float(R.abs().max())
+    assert err < 1e-4 * max(scale, 1e-3), f'VI finite differences: max |dR| {err:.3e}, max |R| {scale:.3e}'
+
+
+def test_vi_gradient_reaches_posterior():
+    m, coef = make_vi([0.9, 1.1, 0.8, 1.2], randomise=True)
+    q = GaussianPosterior(np.concatenate([coef.numpy(), [0.0]]), [0.05] * SP.n_coef + [0.3])
+    u, _ = q.sample(2)
+    t = 20 * torch.rand(50, 1)
+    tot = 0.0
+    for k in range(2):
+        m.set_sample(u[k, :SP.n_coef], u[k, SP.n_coef])
+        tot = tot + (m.theta_at(0.6, t) ** 2).sum() + (pde_residual(m, -torch.rand(30, 1), t[:30]) ** 2).sum()
+    tot.backward()
+    assert float(q.mu.grad[:SP.n_coef].abs().sum()) > 0.0, 'data reach the water-table posterior'
+    assert float(q.mu.grad[SP.n_coef].abs()) > 0.0, 'physics reaches the Ks posterior'
+    assert float(q.log_diag.grad.abs().sum()) > 0.0, 'gradients reach the posterior spread'
 
 
 if __name__ == '__main__':
