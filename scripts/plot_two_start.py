@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from wpinn.spline import CubicBSpline1D, ZbSplineNumpy   # noqa: E402
 
 COLORS = {'hydrostatic': '#eb6834', 'hydrostatic+0.5': '#2a78d6', 'constant:1.1': '#1baf7a', 'constant:1.5': '#c2185b',
+          'constant:1.0': '#2a78d6', 'constant:2.0': '#1baf7a',
           'constant:3.0': '#8a4fd1', 'constant:5.0': '#5d6d7e', 'constant:10.0': '#a0522d'}
 
 
