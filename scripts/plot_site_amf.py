@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 LAMBDA = 2.45e6          # J/kg, latent heat of vaporisation
+ALIASES = {'LE': ['LE', 'LE_1_1_1', 'LE_PI_F', 'LE_PI_F_1_1_1'],            # generic name -> column names used by
+           'P_RAIN': ['P_RAIN', 'P_RAIN_1_1_1', 'P', 'P_1_1_1', 'P_2_1_1']}   # sites, first present wins
 
 
 def heights(path, site):
@@ -37,7 +39,12 @@ def read(path, cols):
         rd = csv.reader(fh)
         next(rd), next(rd)
         head = next(rd)
-        idx = {c: head.index(c) for c in cols if c in head}
+        idx = {}
+        for c in cols:                                       # the requested name keys the result, even if read
+            for name in ALIASES.get(c, [c]):                 # from an alias
+                if name in head:
+                    idx[c] = head.index(name)
+                    break
         ts, vals = [], {c: [] for c in idx}
         for row in rd:
             ts.append(row[0])
@@ -85,7 +92,7 @@ def main():
     swc = sorted([c for c in head if re.fullmatch(rf'SWC_{args.profile}_\d+_1', c)], key=lambda c: -hts.get(c, 0.0))
     if args.max_depth_m is not None:
         swc = [c for c in swc if -hts.get(c, 0.0) <= args.max_depth_m + 1e-9]
-    rain = 'P_RAIN' if 'P_RAIN' in head else 'P'
+    rain = 'P_RAIN'
     wtd = [c for c in head if re.fullmatch(r'WTD(_\d+_\d+_\d+)?', c)]
     t, v = read(args.csv, swc + [rain, 'LE'] + wtd)
     for c in swc:                                            # SWC in %: other flags (e.g. 9999999) and zeros dropped
