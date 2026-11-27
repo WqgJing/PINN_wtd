@@ -74,6 +74,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--start', default=None)
     ap.add_argument('--end', default=None)
+    ap.add_argument('--halfhourly', action='store_true', help='rain and ET as half-hourly rates (mm/h), not daily')
     args = ap.parse_args()
     hts = heights(args.heights, args.site)
     with open(args.csv, newline='') as fh:
@@ -89,12 +90,20 @@ def main():
     t0 = np.datetime64(args.start) if args.start else t[0]
     t1 = np.datetime64(args.end) if args.end else t[-1]
     fig, axes = plt.subplots(3, 1, figsize=(13, 11), sharex=True, gridspec_kw={'height_ratios': [1, 1.6, 1.2]})
-    td, pr = daily(t, v[rain], 'sum')
-    _, le = daily(t, v['LE'], 'mean')
-    m = (td >= t0.astype('datetime64[D]')) & (td <= t1.astype('datetime64[D]'))
-    axes[0].plot(td[m], pr[m], color='#2a78d6', lw=1.0, label='rain')
-    axes[0].plot(td[m], le[m] / LAMBDA * 86400.0, color='#eb6834', lw=1.0, label='evapotranspiration (eddy covariance)')
-    axes[0].set_ylabel('water flux (mm/d)')
+    if args.halfhourly:
+        m = (t >= t0) & (t <= t1)
+        axes[0].plot(t[m], 2.0 * v[rain][m], color='#2a78d6', lw=1.0, label='rain')
+        axes[0].plot(t[m], v['LE'][m] / LAMBDA * 3600.0, color='#eb6834', lw=1.0,
+                     label='evapotranspiration (eddy covariance)')
+        axes[0].set_ylabel('water flux (mm/h)')
+    else:
+        td, pr = daily(t, v[rain], 'sum')
+        _, le = daily(t, v['LE'], 'mean')
+        m = (td >= t0.astype('datetime64[D]')) & (td <= t1.astype('datetime64[D]'))
+        axes[0].plot(td[m], pr[m], color='#2a78d6', lw=1.0, label='rain')
+        axes[0].plot(td[m], le[m] / LAMBDA * 86400.0, color='#eb6834', lw=1.0,
+                     label='evapotranspiration (eddy covariance)')
+        axes[0].set_ylabel('water flux (mm/d)')
     axes[0].legend(frameon=False, fontsize=9)
     m = (t >= t0) & (t <= t1)
     cmap = plt.get_cmap('viridis')
@@ -109,7 +118,7 @@ def main():
     axes[2].invert_yaxis()
     axes[2].set_ylabel('water-table depth (m)')
     axes[2].legend(frameon=False, fontsize=9)
-    axes[2].xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    axes[2].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d' if args.halfhourly else '%Y-%m'))
     axes[2].set_xlabel('date')
     for ax in axes:
         ax.grid(True, color='#e1e0d9', lw=0.6)
