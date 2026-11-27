@@ -50,7 +50,13 @@ def main():
     ap.add_argument('--heights', required=True)
     ap.add_argument('--site', required=True)
     ap.add_argument('--profile', default='3')
-    ap.add_argument('--exclude', nargs=2, default=None, help='first and last date to leave out')
+    ap.add_argument('--exclude', nargs=2, action='append', default=None,
+                    help='first and last date to leave out (repeatable)')
+    ap.add_argument('--wtd', default='WTD_1_1_1', help='water-table column')
+    ap.add_argument('--ts', default=None, help='soil-temperature column: drop times colder than --ts_min (frost)')
+    ap.add_argument('--ts_min', type=float, default=1.0)
+    ap.add_argument('--max_wt_m', type=float, default=None, help='drop times with the water table this deep or deeper '
+                    '(a well that bottoms out reads flat there)')
     ap.add_argument('--dry_hours', type=float, default=48.0)
     ap.add_argument('--max_change', type=float, default=0.005)
     ap.add_argument('--min_height_m', type=float, default=0.02)
@@ -64,17 +70,21 @@ def main():
         next(rd), next(rd)
         head = next(rd)
     swc = sorted([c for c in head if re.fullmatch(rf'SWC_{args.profile}_\d+_1', c)], key=lambda c: -hts[c])
-    t, v = psa.read(args.csv, swc + ['WTD_1_1_1', 'P_RAIN'])
+    t, v = psa.read(args.csv, swc + [args.wtd, 'P_RAIN'] + ([args.ts] if args.ts else []))
     for c in swc:
         v[c] = np.where((v[c] > 0.0) & (v[c] <= 100.0), v[c] / 100.0, np.nan)
-    zb = -v['WTD_1_1_1']
+    zb = -v[args.wtd]
     rain = np.nan_to_num(v['P_RAIN'])
     k = int(round(args.dry_hours * 2))
     rain_prev = np.convolve(rain, np.ones(k), mode='full')[:rain.size]          # sum over the previous k half-hours
     keep_t = (rain_prev == 0.0) & np.isfinite(zb)
-    if args.exclude:
-        e0, e1 = np.datetime64(args.exclude[0]), np.datetime64(args.exclude[1])
+    for e in (args.exclude or []):
+        e0, e1 = np.datetime64(e[0]), np.datetime64(e[1])
         keep_t &= ~((t >= e0) & (t <= e1))
+    if args.ts:
+        keep_t &= np.isfinite(v[args.ts]) & (v[args.ts] > args.ts_min)
+    if args.max_wt_m is not None:
+        keep_t &= zb < args.max_wt_m
     hourly = (t.astype('datetime64[m]').astype(int) % 60) == 0
     pairs = {}
     for c in swc:

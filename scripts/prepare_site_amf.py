@@ -35,6 +35,8 @@ def main():
     ap.add_argument('--sat_margin_m', type=float, default=0.10)
     ap.add_argument('--soil', default=None, help='theta_s,theta_r,alpha,n,Ks given directly (e.g. from field_retention.py); '
                     'replaces the texture class and the theta_s / theta_r estimates')
+    ap.add_argument('--wtd', default='WTD_1_1_1', help='water-table column (scoring only)')
+    ap.add_argument('--le', default='LE', help='latent-heat column (default: LE or its first alias)')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
     hts = psa.heights(args.heights, args.site)
@@ -45,7 +47,8 @@ def main():
         head = next(rd)
     swc = sorted([c for c in head if re.fullmatch(rf'SWC_{args.profile}_\d+_1', c)], key=lambda c: -hts[c])
     depths = [round(-hts[c], 4) for c in swc]
-    t, v = psa.read(args.csv, swc + ['WTD_1_1_1', 'LE'])
+    t, v = psa.read(args.csv, swc + [args.wtd, args.le])
+    v['WTD_1_1_1'], v['LE'] = v[args.wtd], v[args.le]
     for c in swc:
         v[c] = np.where((v[c] > 0.0) & (v[c] <= 100.0), v[c] / 100.0, np.nan)
     zb_all = -v['WTD_1_1_1']
