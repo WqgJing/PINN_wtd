@@ -33,6 +33,8 @@ def main():
     ap.add_argument('--end', required=True)
     ap.add_argument('--texture', default='sand', choices=sorted(CLASSES))
     ap.add_argument('--sat_margin_m', type=float, default=0.10)
+    ap.add_argument('--soil', default=None, help='theta_s,theta_r,alpha,n,Ks given directly (e.g. from field_retention.py); '
+                    'replaces the texture class and the theta_s / theta_r estimates')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
     hts = psa.heights(args.heights, args.site)
@@ -56,6 +58,9 @@ def main():
     driest = float(np.nanmin(np.stack([v[c] for c in swc])))
     soil['theta_s'] = theta_s
     soil['theta_r'] = min(soil['theta_r'], max(driest, 0.0))
+    if args.soil:
+        soil = dict(zip(['theta_s', 'theta_r', 'alpha', 'n', 'Ks'], (float(x) for x in args.soil.split(','))))
+        sub = np.zeros(1, dtype=bool)                              # theta_s given, not estimated here
 
     t0, t1 = np.datetime64(args.start), np.datetime64(args.end)
     m = (t >= t0) & (t <= t1)
@@ -78,8 +83,10 @@ def main():
              soil=np.array([soil['theta_s'], soil['theta_r'], soil['alpha'], soil['n'], soil['Ks']]),
              t_nodes=t_days, tp_nodes_mmd=filled, start=str(t0))
     info = {'site': args.site, 'profile': args.profile, 'start': str(t0), 'end': str(t1), 'depths_m': depths,
-            'soil': soil, 'theta_s_from': f'{deep} median over {int(sub.sum())} half-hours with the water table >= '
-                                          f'{args.sat_margin_m} m above it', 'driest_reading': driest,
+            'soil': soil, 'soil_given': bool(args.soil),
+            'theta_s_from': 'given' if args.soil else (f'{deep} median over {int(sub.sum())} half-hours with the water '
+                                                       f'table >= {args.sat_margin_m} m above it'),
+            'driest_reading': driest,
             'valid_frac': {c: float(np.isfinite(th[:, j]).mean()) for j, c in enumerate(swc)},
             'et_filled_frac': float((~np.isfinite(et)).mean()), 'et_mean_mmd': float(filled.mean()),
             'zb_range_m': [float(zb.min()), float(zb.max())]}
