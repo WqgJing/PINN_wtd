@@ -143,7 +143,7 @@ def build(cfg, dev):
                 th_obs_rec[:, j] = np.interp(t_rec - float(sh) / 24.0, t_rec, th_obs_rec[:, j])
     # optional gaps: [[sensor index, first day, last day], ...] in record days; missing readings are left out of the
     # data loss. Inputs that need a full series (memory features, start path) get a straight-line fill instead.
-    avail_rec = np.ones(th_obs_rec.shape, dtype=bool)
+    avail_rec = np.isfinite(th_obs_rec)                              # real records have missing readings (NaN)
     for j, a, b in (sc.get('gaps') or []):
         avail_rec[(t_rec >= float(a) - 1e-9) & (t_rec <= float(b) + 1e-9), int(j)] = False
     contamination, qc_info = None, None
