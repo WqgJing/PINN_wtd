@@ -96,4 +96,7 @@ class ProfilePINN(nn.Module):
 
     def theta_at(self, depth_m, t):
         """Soil moisture at depth_m [m] (scalar or (N, 1)) and window time t (N, 1)."""
-        return self.soil.theta(self.h_tilde(self.xi_of_depth(depth_m, t), t))
+        h = self.h_tilde(self.xi_of_depth(depth_m, t), t)
+        if getattr(self.soil, 'layered', False):                 # layered soil: its parameters at depth_m
+            return self.soil.theta(h, depth_m)
+        return self.soil.theta(h)

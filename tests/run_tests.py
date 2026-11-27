@@ -13,6 +13,7 @@ from wpinn.physics import pde_residual, block_defect   # noqa: E402
 from wpinn.soil import SoilVG                          # noqa: E402
 from wpinn.spline import CubicBSpline1D, ZbSplineNumpy  # noqa: E402
 from wpinn.vi import VarKsSoil, VIProfilePINN, GaussianPosterior, WaterTableKsPrior   # noqa: E402
+from wpinn.soil_layered import LayeredSoilVG   # noqa: E402
 
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(0)
@@ -209,6 +210,76 @@ def test_vi_gradient_reaches_posterior():
     assert float(q.mu.grad[:SP.n_coef].abs().sum()) > 0.0, 'data reach the water-table posterior'
     assert float(q.mu.grad[SP.n_coef].abs()) > 0.0, 'physics reaches the Ks posterior'
     assert float(q.log_diag.grad.abs().sum()) > 0.0, 'gradients reach the posterior spread'
+
+
+BASE = dict(theta_s=0.4193514611932402, theta_r=5.66e-09, alpha=0.822311364445854, n=2.7469217167092075,
+            Ks=1.922838127196462e-06)
+TWO = [dict(top_m=0.0, **BASE), dict(top_m=0.30, theta_s=BASE['theta_s'], theta_r=BASE['theta_r'],
+                                    alpha=0.5 * BASE['alpha'], n=2.0, Ks=0.3 * BASE['Ks'])]
+
+
+def make_layered(path_m, layers, randomise=False):
+    t = np.linspace(0, 20, 481)
+    if np.ndim(path_m) == 0:
+        coef = np.full(SP.n_coef, np.log(np.expm1(float(path_m) - 0.05)))
+    else:
+        coef = ZbSplineNumpy.fit(SP, t, np.interp(t, np.linspace(0, 20, len(path_m)), path_m), 0.05).coef
+    soil = LayeredSoilVG(layers, width_m=0.02, L=2.0)
+    m = ProfilePINN(soil, SP, coef, 0.05, D_TOP, 20.0, 35.0, width=16, depth=2, head_form='scale')
+    if randomise:
+        torch.nn.init.normal_(m.N.net[-1].weight, std=0.05)
+        torch.nn.init.normal_(m.N.net[-1].bias, std=0.05)
+    return m
+
+
+def test_layered_one_layer_equals_single():
+    one = LayeredSoilVG([dict(top_m=0.0, **BASE)], L=2.0)
+    h = -torch.rand(200, 1) * 2.0 + 0.05
+    d = torch.rand(200, 1) * 2.0
+    for f in ('theta', 'K', 'storage'):
+        a, b = getattr(one, f)(h, d), getattr(SOIL, f)(h)
+        assert float((a - b).abs().max()) < 1e-12, f'one layer: {f}'
+
+
+def test_layered_matches_fem_blend():
+    s = LayeredSoilVG(TWO, width_m=0.02, L=2.0)
+    z = torch.linspace(0.0, 1.0, 101)
+    w = 0.5 * (1.0 + torch.tanh((z - 0.30) / 0.02))
+    ts, tr, a_t, n, m, kf = s.params(z)
+    assert float((a_t / 2.0 - BASE['alpha'] * (1.0 + w * (0.5 - 1.0))).abs().max()) < 1e-12, 'alpha blend'
+    assert float((n - (BASE['n'] + w * (2.0 - BASE['n']))).abs().max()) < 1e-12, 'n blend'
+    assert float((kf - torch.exp(w * math.log(0.3))).abs().max()) < 1e-12, 'Ks blend (log-linear)'
+
+
+def test_layered_rest_fd_and_sensors():
+    m = make_layered(1.0, TWO)
+    xi, tt = -torch.rand(400, 1), 20 * torch.rand(400, 1)
+    assert float(pde_residual(m, xi, tt).abs().max()) < 1e-10, 'layered rest residual'
+    t = 20 * torch.rand(50, 1)
+    for d in (0.05, 0.6):
+        ref = m.soil.theta(-(m.zb(t) - d) / 2.0, torch.full_like(t, d))
+        assert float((m.theta_at(d, t) - ref).abs().max()) < 1e-12, f'layered hydrostatic theta at {d} m'
+    assert float((m.theta_at(0.6, t) - SOIL.theta(-(m.zb(t) - 0.6) / 2.0)).abs().max()) > 1e-3, 'layer 2 differs'
+    m = make_layered([0.9, 1.1, 0.8, 1.2], TWO, randomise=True)
+    xi = -0.1 - 0.8 * torch.rand(20, 1)
+    t = 1.0 + 18 * torch.rand(20, 1)
+    R = pde_residual(m, xi, t).detach()
+    e_t, e_x, s = 1e-4, 1e-4, m.soil
+    with torch.no_grad():
+        H = lambda tt: m.H_tilde(tt)
+        dep = lambda x, tt: m.d_top - x * H(tt) * s.L
+        Mf = lambda x, tt: s.storage(m.h_tilde(x, tt), dep(x, tt))
+        dM_dt = m.T_days * (Mf(xi, t + e_t) - Mf(xi, t - e_t)) / (2 * e_t)
+        Hdot = m.T_days * (H(t + e_t) - H(t - e_t)) / (2 * e_t)
+        dM_dxi = (Mf(xi + e_x, t) - Mf(xi - e_x, t)) / (2 * e_x)
+
+        def q(x):
+            dh = (m.h_tilde(x + e_x, t) - m.h_tilde(x - e_x, t)) / (2 * e_x)
+            return -s.K(m.h_tilde(x, t), dep(x, t)) * (dh / H(t) + 1.0)
+        dq_dxi = (q(xi + e_x) - q(xi - e_x)) / (2 * e_x)
+        R_fd = dM_dt - (xi * Hdot / H(t)) * dM_dxi + dq_dxi / H(t)
+    err, scale = float((R - R_fd).abs().max()), float(R.abs().max())
+    assert err < 1e-4 * max(scale, 1e-3), f'layered finite differences: max |dR| {err:.3e}, max |R| {scale:.3e}'
 
 
 if __name__ == '__main__':

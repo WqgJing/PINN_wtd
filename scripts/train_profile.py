@@ -178,6 +178,11 @@ def build(cfg, dev):
     for key, f in (cfg.get('soil_factor') or {}).items():           # a wrong soil guess: the record's soil times f
         s[names.index(key)] *= float(f)
     soil = SoilVG(theta_s=s[0], theta_r=s[1], alpha=s[2], n=s[3], Ks=s[4], L=float(cfg['scaling']['L']))
+    if cfg.get('soil_layers'):                                      # optional layered soil (wpinn.soil_layered)
+        from wpinn.soil_layered import LayeredSoilVG, layers_from_config
+        base = dict(zip(names, (float(v) for v in s)))
+        soil = LayeredSoilVG(layers_from_config(base, cfg['soil_layers']),
+                             width_m=float(cfg['soil_layers'].get('width_m', 0.02)), L=float(cfg['scaling']['L']))
     sp = CubicBSpline1D(0.0, t1 - t0, float(cfg['zb_spline']['knot_days']))
     zb_min = float(cfg['zb_spline']['zb_min'])
     zb_true = rec['zb'][k]
@@ -185,7 +190,8 @@ def build(cfg, dev):
     depths = [float(d) for d in sc['depths_m']]
     d_top, d_deep = depths[0], depths[-1]
     # hydrostatic reading of the deepest sensor: its height above the water table at rest, from the retention curve
-    zb_hyd = d_deep - soil.h_from_theta(th_fill_rec[k, -1])
+    zb_hyd = d_deep - (soil.h_from_theta(th_fill_rec[k, -1], depth=d_deep) if getattr(soil, 'layered', False)
+                       else soil.h_from_theta(th_fill_rec[k, -1]))
     init = str(cfg['init'])
     if init == 'truth':
         coef0 = truth.coef

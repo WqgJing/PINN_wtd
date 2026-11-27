@@ -1,0 +1,52 @@
+# Two-layer synthetic record (truth soil below 30 cm: alpha x 0.5, n 2.0, Ks x 0.3, tanh blend 2 cm; FEM with
+# fem_hetero), 4 sensors 5/20/40/60 cm, days 35 - 55; the PINN given the SAME layered soil (wpinn.soil_layered).
+data:
+  npz: /storage/project/r-rbras6-0/jjason3/wtd_profile_pinn/output/syn_nc2_spring23_deep_dt16_layer30/synthetic.npz
+  truth_key: theta_sensors_check     # the 1/16 h solution (1/4 h is off by up to 0.009 at wetting fronts, 1 h by 0.028)
+window:
+  start_day: 35.0
+  end_day: 55.0
+sensors:
+  depths_m: [0.05, 0.20, 0.40, 0.60]   # the first is the top of the model column
+  noise_sigma: 0.005
+  noise_seed: 0
+scaling:
+  L: 2.0
+zb_spline:
+  knot_days: 1.0
+  zb_min: 0.05
+physics:
+  root_sink: true                    # Feddes sink of the FEM with the record's transpiration (known)
+net:
+  width: 128
+  depth: 6
+  fourier_periods_days: [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+  path_taus_days: [0.25, 1.0, 4.0, 16.0]
+  memory_taus_days: [0.0416667, 0.25, 1.0, 4.0]   # memories of the top sensor's record and of the transpiration
+  head_form: scale                   # h = -(1+xi) H exp(N): unsaturated above the water table (shift: original form)
+sigmas:
+  theta: 0.005                       # = the noise
+  pde_factor: 1.0                    # sigma_pde = RMS day-mean rate of change of the sensors (signal_rate_scale)
+mode: invert                         # invert | fixed (path held at the truth: sanity run)
+init: hydrostatic                    # hydrostatic (deepest sensor) | hydrostatic+<m> | truth | constant:<m>
+train:
+  seed: 0
+  steps: 30000
+  lr: 1.0e-3
+  lr_final: 2.0e-5
+  coef_lr_factor: 1.0                # learning rate of the path coefficients relative to the network's (original 0.1)
+  coef_hold_frac: 0.5                # path rate held for this share of the steps, then decayed (original 0)
+  warmup_steps: 3000                 # path held at its start for these steps
+  n_col: 8192
+  n_box: 128
+  box_n_t: 8
+  box_n_xi: 4
+  eval_every: 500
+soil_layers:                         # layered soil for the PINN (values not given = the record's base soil)
+  width_m: 0.02
+  layers:
+  - top_m: 0.0
+  - top_m: 0.30
+    alpha_factor: 0.5
+    n: 2.0
+    Ks_factor: 0.3

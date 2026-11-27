@@ -24,15 +24,16 @@ def pde_residual(model, xi, t_days):
     H = model.H_tilde(t)
     Hdot = Td * _grad(H, t)
     h = model.h_tilde(xi, t)
-    M = soil.storage(h)
+    depth = model.d_top - xi * H * soil.L                       # true depth (m), differentiable in xi and t
+    layered = getattr(soil, 'layered', False)                  # layered soil: parameters at that depth
+    M = soil.storage(h, depth) if layered else soil.storage(h)
     dM_dt = Td * _grad(M, t)
     dM_dxi = _grad(M, xi)
     dh_dxi = _grad(h, xi)
-    q = -soil.K(h) * (dh_dxi / H + 1.0)
+    q = -(soil.K(h, depth) if layered else soil.K(h)) * (dh_dxi / H + 1.0)
     dq_dxi = _grad(q, xi)
     R = dM_dt - (xi * Hdot / H) * dM_dxi + dq_dxi / H
     if model.sink is not None:
-        depth = model.d_top - xi * H * soil.L
         R = R + model.sink(depth, t + model.t_off, h * soil.L) * (soil.L / soil.Ks)
     return R
 
