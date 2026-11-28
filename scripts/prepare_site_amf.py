@@ -37,6 +37,8 @@ def main():
                     'replaces the texture class and the theta_s / theta_r estimates')
     ap.add_argument('--wtd', default='WTD_1_1_1', help='water-table column (scoring only)')
     ap.add_argument('--le', default='LE', help='latent-heat column (default: LE or its first alias)')
+    ap.add_argument('--wtd_despike_m', type=float, default=None, help='drop well readings farther than this from the '
+                    'running 5-hour median (isolated glitches) before interpolating; off by default')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
     hts = psa.heights(args.heights, args.site)
@@ -71,6 +73,13 @@ def main():
     t_days = (tm - t0).astype('timedelta64[m]').astype(float) / 1440.0
     th = np.stack([v[c][m] for c in swc], axis=1)
     zb = zb_all[m]
+    n_spikes = 0
+    if args.wtd_despike_m is not None:
+        pad = np.pad(zb, 5, mode='edge')
+        med = np.nanmedian(np.lib.stride_tricks.sliding_window_view(pad, 11), axis=1)
+        spike = np.isfinite(zb) & (np.abs(zb - med) > args.wtd_despike_m)
+        n_spikes = int(spike.sum())
+        zb = np.where(spike, np.nan, zb)
     ok = np.isfinite(zb)
     zb = np.interp(t_days, t_days[ok], zb[ok])                     # scoring only; window is complete
 
@@ -92,7 +101,7 @@ def main():
             'driest_reading': driest,
             'valid_frac': {c: float(np.isfinite(th[:, j]).mean()) for j, c in enumerate(swc)},
             'et_filled_frac': float((~np.isfinite(et)).mean()), 'et_mean_mmd': float(filled.mean()),
-            'zb_range_m': [float(zb.min()), float(zb.max())]}
+            'zb_range_m': [float(zb.min()), float(zb.max())], 'well_spikes_removed': n_spikes}
     with open(os.path.splitext(args.out)[0] + '.json', 'w') as fh:
         json.dump(info, fh, indent=1)
     print(f"[prep] {json.dumps(info)}", flush=True)
